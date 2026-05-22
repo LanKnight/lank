@@ -3,6 +3,8 @@ import json
 import os
 import shutil
 import subprocess
+import time
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
@@ -18,6 +20,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.align import Align
+from rich.live import Live
+from rich.text import Text
+from rich.box import ROUNDED, DOUBLE
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.columns import Columns
+from rich.layout import Layout
 
 
 FIXED_REPLY = "这个问题很不错，建议问AI"
@@ -25,22 +33,149 @@ FIXED_REPLY = "这个问题很不错，建议问AI"
 CONFIG_DIR = Path.home() / ".lank"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
+# AI 角色配置 - 多种AI头像
+AI_AVATARS = [
+    """
+╭───────────╮
+│  ◉     ◉  │
+│     ◡     │
+│  ╰─────╯  │
+╰───────────╯""",
+    """
+┌───────────┐
+│ ★     ★   │
+│    ▽      │
+│  └─────┘  │
+└───────────┘""",
+    """
+◢───────────◣
+│  ●     ●  │
+│    ◠      │
+│  ╰─────╯  │
+◥───────────◤"""
+]
 
-def render_chat(console: Console, messages: List[Tuple[str, str]]):
-    table = Table.grid(expand=True)
-    table.add_column(ratio=1)
-    chat_text = []
-    for role, text in messages:
+THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+LOADING_BARS = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
+
+
+def get_ai_thinking_animation(frame_index: int) -> str:
+    """获取思考动画帧"""
+    frame = THINKING_FRAMES[frame_index % len(THINKING_FRAMES)]
+    return f"[bold yellow]{frame}[/bold yellow] [cyan]AI 深度思考中...[/cyan]"
+
+
+def stream_text(console: Console, text: str, speed: float = 0.03):
+    """模拟流式输出效果"""
+    from rich.text import Text
+    
+    # 创建一个空的Text对象
+    output_text = Text()
+    
+    # 逐字添加并实时刷新
+    for char in text:
+        output_text.append(char, style="bold magenta")
+        console.print(output_text, end="\r")
+        time.sleep(speed)
+    
+    # 最后正常换行
+    console.print()
+
+
+def render_chat(console: Console, messages: List[Tuple[str, str]], show_avatar: bool = True):
+    """渲染聊天界面，带AI头像和酷炫效果"""
+    
+    chat_lines = []
+    
+    # 添加顶部装饰
+    chat_lines.append("[bold blue]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold blue]")
+    chat_lines.append("")
+    
+    for idx, (role, text) in enumerate(messages):
         ts = datetime.now().strftime("%H:%M:%S")
+        
         if role == "user":
-            chat_text.append(f"[bold cyan]{ts} 用户:[/bold cyan] {text}")
+            # 用户消息 - 右侧对齐，带渐变效果
+            user_line = f"[dim]{ts}[/dim] [bold cyan]👤 你:[/bold cyan] {text}"
+            chat_lines.append(f"[right]{user_line}[/right]")
+            chat_lines.append("")
+            
         elif role == "assistant":
-            chat_text.append(f"[bold magenta]{ts} 助手:[/bold magenta] {text}")
+            # AI消息 - 左侧对齐，带头像和特殊效果
+            avatar_idx = idx % len(AI_AVATARS)
+            avatar = AI_AVATARS[avatar_idx]
+            
+            if show_avatar:
+                ai_header = f"[bold magenta]🤖 AI 智能助手[/bold magenta] [dim]{ts}[/dim]"
+                chat_lines.append(ai_header)
+                
+                # 添加ASCII头像，带颜色
+                avatar_lines = avatar.split('\n')
+                for line in avatar_lines:
+                    chat_lines.append(f"[magenta]{line}[/magenta]")
+                
+                # 回复内容带打字机效果标记
+                chat_lines.append(f"[bold green]💬 回复:[/bold green] [italic]{text}[/italic]")
+            else:
+                ai_line = f"[dim]{ts}[/dim] [bold magenta]🤖 AI:[/bold magenta] {text}"
+                chat_lines.append(ai_line)
+            chat_lines.append("")
+            
         else:
-            chat_text.append(f"[green]{ts} 系统:[/green] {text}")
-    body = "\n\n".join(chat_text) or "(空聊天)"
-    panel = Panel.fit(Align.left(body), title="lank TUI 聊天", border_style="bright_blue")
+            # 系统消息 - 居中显示
+            sys_line = f"[green]⚙️ {text}[/green]"
+            chat_lines.append(f"[center]{sys_line}[/center]")
+            chat_lines.append("")
+    
+    # 添加底部装饰
+    chat_lines.append("[bold blue]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold blue]")
+    
+    body = "\n".join(chat_lines) or "[dim](开始新的对话...)[/dim]"
+    
+    # 创建更美观的面板，使用双层边框
+    panel = Panel(
+        Align.left(body),
+        title="[bold rainbow]✨ LANK AI 聊天室 ✨[/bold rainbow]",
+        subtitle=f"[dim]在线 • {datetime.now().strftime('%Y-%m-%d')}[/dim]",
+        border_style="bright_cyan",
+        box=DOUBLE,
+        padding=(1, 2),
+        highlight=True
+    )
     console.print(panel)
+
+
+def show_thinking_animation(console: Console, duration: float = 1.5):
+    """显示酷炫的思考动画"""
+    frames_count = int(duration * 10)  # 每秒10帧
+    
+    with Live(refresh_per_second=10) as live:
+        for i in range(frames_count):
+            frame = THINKING_FRAMES[i % len(THINKING_FRAMES)]
+            bar = LOADING_BARS[i % len(LOADING_BARS)]
+            
+            # 创建进度条效果
+            progress_width = 30
+            filled = int((i / frames_count) * progress_width)
+            progress_bar = bar * filled + "░" * (progress_width - filled)
+            
+            animation_text = f"""
+[bold yellow]{frame}[/bold yellow] [cyan]AI 神经网络处理中...[/cyan]
+
+[dim]处理进度:[/dim] [yellow]{progress_bar}[/yellow] [bold]{int((i / frames_count) * 100)}%[/bold]
+
+[dim]正在分析语义 • 生成响应 • 优化表达[/dim]
+            """.strip()
+            
+            thinking_panel = Panel(
+                Align.center(animation_text),
+                title="[bold yellow]🧠 思考中[/bold yellow]",
+                border_style="yellow",
+                box=ROUNDED,
+                padding=(1, 2)
+            )
+            live.update(thinking_panel)
+            time.sleep(0.1)
 
 
 def ensure_config_dir():
@@ -137,33 +272,67 @@ def run_first_run_guide(console: Console):
 
 def run_tui():
     console = Console()
-    messages: List[Tuple[str, str]] = [("system", "欢迎使用 lank TUI — 输入 exit 或 Ctrl-D 退出。")]
+    messages: List[Tuple[str, str]] = [("system", "欢迎使用 LANK AI — 你的智能聊天助手 🚀")]
 
     history = InMemoryHistory() if InMemoryHistory is not None else None
+
+    # 显示酷炫的欢迎信息
+    welcome_art = """
+[bold cyan]
+╔══════════════════════════════════════════════════╗
+║                                                  ║
+║     ██      █████  ███    ██ ██   ██             ║
+║     ██     ██   ██ ████   ██ ██ ██               ║
+║     ██     ███████ ██ ██  ██ ███                 ║
+║     ██     ██   ██ ██  ██ ██ ██ ██               ║
+║     ██████ ██   ██ ██   ████ ██   ██             ║
+║                                                  ║
+║         🤖 智能 AI 聊天助手 v2.0 🤖              ║
+║                                                  ║
+╚══════════════════════════════════════════════════╝
+[/bold cyan]
+    """
+    console.print(welcome_art)
+    console.print("\n[bold green]✨ 全新升级 | 流式输出 | 思考动画 | 酷炫界面[/bold green]\n")
+    time.sleep(1)
 
     while True:
         try:
             console.clear()
-            render_chat(console, messages)
+            render_chat(console, messages, show_avatar=True)
+            
+            # 显示输入提示符
+            console.print("\n[bold yellow]➤ 请输入您的问题:[/bold yellow] ", end="")
             
             if history is not None:
-                user_input = prompt("> ", history=history)
+                user_input = prompt("", history=history)
             else:
-                user_input = prompt("> ")
+                user_input = prompt("")
         except (EOFError, KeyboardInterrupt):
-            console.print("\n已退出。再见!")
+            console.print("\n[bold red]感谢使用 LANK AI！再见! 👋[/bold red]")
             break
 
         if not user_input:
             continue
 
         if user_input.strip().lower() in ("exit", "quit"):
-            console.print("已退出。再见!")
+            console.print("\n[bold green]感谢使用 LANK AI！祝您有美好的一天! 🌟[/bold green]")
             break
 
         messages.append(("user", user_input.strip()))
-        # Fixed reply regardless of input
+        
+        # 显示思考动画
+        console.print("\n[dim]--- AI 正在思考 ---[/dim]\n")
+        show_thinking_animation(console, duration=random.uniform(1.0, 2.0))
+        
+        # 流式输出回复
+        console.print("\n[bold magenta]🤖 AI 助手:[/bold magenta] ", end="")
+        stream_text(console, FIXED_REPLY, speed=0.02)
+        
         messages.append(("assistant", FIXED_REPLY))
+        
+        # 短暂暂停让用户看清
+        time.sleep(0.5)
 
 
 def cli(argv=None):

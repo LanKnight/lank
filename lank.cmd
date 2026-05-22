@@ -1,2 +1,2 @@
 @echo off
-python -m lank %*
+py -m lank %*
