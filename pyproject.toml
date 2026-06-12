@@ -4,11 +4,35 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lank"
-version = "0.1.0"
-description = "轻量级 TUI 聊天工具"
+version = "0.2.0"
+description = "私人 AI 终端助手 - 支持文件操作、命令执行、个性化记忆"
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = ["rich>=12.0", "prompt_toolkit>=3.0"]
+license = {text = "MIT"}
+authors = [
+    {name = "LanKnight"},
+]
+keywords = ["ai", "terminal", "assistant", "cli", "tui"]
+
+dependencies = [
+    "rich>=12.0",
+    "prompt_toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+ai = [
+    "openai>=1.0.0",
+]
+all = [
+    "openai>=1.0.0",
+]
 
 [project.scripts]
-lank = "lank.__main__:cli"
+lank = "lank.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/LanKnight/lank"
+Repository = "https://github.com/LanKnight/lank.git"
+
+[tool.setuptools.packages.find]
+include = ["lank*"]

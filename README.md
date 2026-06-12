@@ -1,49 +1,70 @@
-# lank TUI
+# lank - 私人 AI 终端助手
 
-一个轻量级的终端用户界面（TUI）聊天工具，基于 Python 构建。
+一个轻量级的私人 AI 终端助手，基于用户日常使用习惯构建专属个性化记忆，支持终端交互与日常琐事任务执行。
 
-## 📖 项目简介
+> 🚀 **模型选择**: DeepSeek
 
-lank 是一个简单有趣的命令行聊天工具，采用文本用户界面（TUI）设计。无论用户输入什么内容，助手都会给出相同的幽默回复："这个问题很不错，建议问AI"。
+---
 
-该项目展示了如何使用 `rich` 和 `prompt_toolkit` 库构建美观的终端交互界面，适合学习 Python TUI 开发的基础知识。
+## ✨ 主要特性
 
-### ✨ 主要特性
+### 🎯 三大核心命令
 
-- 🎨 **美观的界面**：使用 rich 库渲染彩色面板和时间戳
-- ⌨️ **交互式输入**：支持命令历史和智能提示
-- 💬 **实时聊天**：显示完整的对话历史
-- 🌍 **跨平台**：支持 Windows、Linux 和 macOS
-- 🚀 **轻量级**：仅依赖两个核心库
+| 命令 | 功能 |
+|------|------|
+| `lank tui` | 启动 TUI 聊天界面（支持 `/ai` 切换 AI 模式） |
+| `lank ai` | 启动 AI 聊天界面（支持工具调用，可带初始问题） |
+| `lank set` | 交互式配置向导 |
+
+### 🤖 AI 智能助手（`lank ai`）
+- 调用 DeepSeek API 进行智能对话
+- **工具调用能力**（类似 Claude）：
+  - 📁 **文件操作**：读取、写入、搜索、替换文件内容
+  - 💻 **命令执行**：运行终端命令并获取输出
+  - 🔍 **代码分析**：查看项目结构、搜索代码定义
+  - 📅 **系统信息**：日期时间、系统信息查询、数学计算
+  - 📝 **待办管理**：添加、查看、完成、删除待办事项
+- 带 Rich 渲染的聊天界面，支持思考动画、工具调用确认
+
+### 🧠 个性化记忆
+- 自动保存对话历史
+- 跨会话记忆恢复
+- 用户偏好学习（用户画像）
+
+### 🎨 美观的 TUI 界面（`lank tui`）
+- 彩色面板和时间戳
+- 命令历史和智能提示
+- 思考动画和流式输出
+- ASCII AI 头像
+
+### 🎪 创意功能
+- **🎨 主题系统**：5 种主题（默认/暗色/赛博朋克/黑客/日落）
+- **📊 使用统计**：记录会话数、消息数、工具调用次数
+- **💾 对话导出**：支持 Markdown 和 JSON 格式导出
+- **🔄 版本检查**：自动检查 GitHub 最新版本
+
+---
 
 ## 🛠️ 技术栈
 
 - **Python 3.8+**
 - **rich >= 12.0** - 终端美化和格式化输出
 - **prompt_toolkit >= 3.0** - 交互式命令行输入
+- **openai >= 1.0.0**（可选）- AI API 调用
+
+---
 
 ## 📦 安装方法
 
 ### 方式一：直接运行（推荐用于测试）
 
-1. **克隆或下载项目**
-   ```powershell
-   cd d:\aboutWork\lank
-   ```
-
-2. **安装依赖**
-   ```powershell
-   pip install -r requirements.txt
-   ```
-
-3. **运行程序**
-   ```powershell
-   python -m lank tui
-   ```
+```powershell
+cd d:\aboutWork\lank
+pip install -r requirements.txt
+python -m lank tui
+```
 
 ### 方式二：Windows 快捷方式
-
-在 Windows 环境中，可以直接使用提供的批处理文件：
 
 ```powershell
 .\lank.cmd tui
@@ -51,160 +72,157 @@ lank 是一个简单有趣的命令行聊天工具，采用文本用户界面（
 
 ### 方式三：安装为全局命令（推荐长期使用）
 
-1. **在项目根目录执行安装**
-   ```powershell
-   pip install --user .
-   ```
+```powershell
+pip install --user .
+# 或安装全部功能（含 AI）
+pip install --user ".[all]"
+```
 
-2. **配置环境变量（如需）**
-   
-   如果安装后提示 Scripts 目录不在 PATH 中，需要将其添加到系统环境变量：
-   
-   - **Windows**: 将 `C:\Users\<用户名>\AppData\Roaming\Python\PythonXX\Scripts` 添加到 PATH
-   - **Linux/macOS**: 将 `~/.local/bin` 添加到 PATH
-   
-   > 💡 **提示**：修改 PATH 后需要重启终端才能生效。
-
-3. **验证安装**
-   ```powershell
-   lank tui
-   ```
+---
 
 ## 🎮 使用方法
 
-### 启动程序
-
-安装完成后，在任意目录下运行：
+### 启动 TUI 聊天界面
 
 ```powershell
 lank tui
 ```
 
-或使用模块方式：
+在 TUI 中：
+- 输入 `/ai` 切换到 AI 智能模式（需先配置 API Key）
+- 输入 `/normal` 切换回普通聊天模式
+- 输入 `/help` 查看帮助
+- 输入 `/clear` 清空对话
+- 输入 `/save` 保存对话
+- 输入 `exit` 退出
+
+### 启动 AI 聊天界面
 
 ```powershell
-python -m lank tui
+# 直接启动 AI 聊天界面（交互式）
+lank ai
+
+# 带初始问题启动
+lank ai 你好
+lank ai 帮我读一下当前目录的文件
+lank ai 帮我计算 123 * 456
 ```
 
-### 基本操作
+在 AI 聊天界面中：
+- 输入 `/clear` 清空对话历史
+- 输入 `/help` 查看帮助
+- 输入 `/save` 保存对话
+- 输入 `/stats` 查看使用统计
+- 输入 `/theme` 查看当前主题
+- 输入 `exit` 退出
 
-- **输入消息**：直接在提示符 `>` 后输入文本并按回车
-- **查看历史**：聊天记录会自动保存并显示在界面上方
-- **退出程序**：
-  - 输入 `exit` 或 `quit`
-  - 按 `Ctrl-D` (EOF)
-  - 按 `Ctrl-C` (中断)
+### 配置管理
 
-### 界面说明
+```powershell
+# 交互式配置向导
+lank set
 
-程序启动后会显示一个蓝色边框的聊天面板：
+# 查看当前配置
+lank set show
 
+# 设置 API Key
+lank set set api_key sk-your-key-here
+
+# 获取配置项
+lank set get model
+
+# 重置配置
+lank set reset
 ```
-╭──────────────────────── lank TUI 聊天 ────────────────────────╮
-│ HH:MM:SS 系统: 欢迎使用 lank TUI — 输入 exit 或 Ctrl-D 退出。 │
-│                                                               │
-│ HH:MM:SS 用户: <你的输入>                                     │
-│                                                               │
-│ HH:MM:SS 助手: 这个问题很不错，建议问AI                       │
-╰───────────────────────────────────────────────────────────────╯
+
+---
+
+## 🔧 配置项
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `api_key` | DeepSeek API 密钥 | - |
+| `api_base` | API 地址 | `https://api.deepseek.com` |
+| `model` | 模型名称 | `deepseek-chat` |
+| `user_name` | 用户称呼 | `用户` |
+| `ai_name` | AI 名称 | `LANK` |
+| `temperature` | 温度参数 (0-2) | `0.7` |
+| `max_tokens` | 最大 Token 数 | `4096` |
+| `system_prompt` | 系统提示词 | 内置默认提示词 |
+| `theme` | 界面主题 | `default` |
+| `safe_mode` | 安全模式（危险操作前确认） | `true` |
+| `working_dir` | 工作目录 | 当前目录 |
+| `memory_enabled` | 记忆功能 | `true` |
+| `max_history` | 最大历史记录数 | `100` |
+
+---
+
+## 📝 示例
+
+### 文件操作
+```powershell
+> lank ai 帮我创建一个 hello.py 文件，打印 "Hello LANK"
+🔧 AI 调用工具: write_to_file
+✅ 已写入文件: hello.py
+
+> lank ai 读取 hello.py 的内容
+📄 文件内容:
+1 | print("Hello LANK")
 ```
 
-每条消息都包含：
-- ⏰ **时间戳**：精确到秒的时间显示
-- 👤 **角色标识**：用户（青色）、助手（紫色）、系统（绿色）
-- 💬 **消息内容**：实际对话文本
-
-## 🔧 首次运行引导
-
-当你第一次执行 `lank tui` 时，程序会自动进入交互式引导流程：
-
-1. **检查依赖**：检测是否缺少必要的 Python 包
-2. **安装依赖**：可选自动安装缺失的依赖
-3. **全局安装**：可选将项目安装为可执行工具
-4. **PATH 配置**：检测并提示配置环境变量
-
-引导完成后，配置信息会保存到 `~/.lank/config.json`，下次启动时将跳过此步骤。
-
-## 📝 示例会话
-
+### 命令执行
+```powershell
+> lank ai 查看当前目录有哪些文件
+🔧 AI 调用工具: list_files
+📁 src/
+📄 README.md
+📄 hello.py
 ```
-> 你好
-╭──────────────────────── lank TUI 聊天 ────────────────────────╮
-│ 20:55:39 系统: 欢迎使用 lank TUI — 输入 exit 或 Ctrl-D 退出。 │
-│                                                               │
-│ 20:55:39 用户: 你好                                           │
-│                                                               │
-│ 20:55:39 助手: 这个问题很不错，建议问AI                       │
-╰───────────────────────────────────────────────────────────────╯
 
-> 在吗
-╭──────────────────────── lank TUI 聊天 ────────────────────────╮
-│ 20:55:39 系统: 欢迎使用 lank TUI — 输入 exit 或 Ctrl-D 退出。 │
-│                                                               │
-│ 20:55:39 用户: 你好                                           │
-│                                                               │
-│ 20:55:39 助手: 这个问题很不错，建议问AI                       │
-│                                                               │
-│ 20:55:42 用户: 在吗                                           │
-│                                                               │
-│ 20:55:42 助手: 这个问题很不错，建议问AI                       │
-╰───────────────────────────────────────────────────────────────╯
+### 待办管理
+```powershell
+> lank ai 帮我添加一个待办：完成项目文档
+✅ 已添加待办 [#1]: 完成项目文档
+
+> lank ai 显示我的待办列表
+📋 待办事项列表
+⬜ [#1] 🟡 完成项目文档
 ```
+
+---
 
 ## 🗂️ 项目结构
 
 ```
 lank/
 ├── lank/
-│   └── __main__.py      # 主程序入口
-├── README.md             # 项目说明文档
-├── pyproject.toml        # 项目配置和依赖
-├── requirements.txt      # Python 依赖列表
-└── lank.cmd              # Windows 启动脚本
+│   ├── __init__.py          # 包初始化（版本号）
+│   ├── __main__.py          # 主入口
+│   ├── cli.py               # CLI 命令处理 + AI 聊天界面
+│   ├── config.py            # 配置管理（lank set）
+│   ├── tui.py               # TUI 聊天界面
+│   ├── ai_client.py         # AI 客户端（DeepSeek API + 工具调用）
+│   ├── memory.py            # 个性化记忆模块
+│   ├── utils.py             # 工具函数（主题/统计/导出/更新检查）
+│   └── tools/               # 工具模块
+│       ├── __init__.py      # 工具注册与调度
+│       ├── file_ops.py      # 文件操作（6 个工具）
+│       ├── cmd_exec.py      # 命令执行（1 个工具）
+│       ├── system.py        # 系统工具（3 个工具）
+│       └── todo_tools.py    # 待办管理（4 个工具）
+├── README.md
+├── pyproject.toml
+├── requirements.txt
+├── lank.cmd
+└── todo.md
 ```
 
-## ⚙️ 配置文件
-
-首次运行后会在用户主目录创建配置文件夹：
-
-- **位置**：`~/.lank/config.json`
-- **内容**：记录首次引导是否完成
-- **作用**：避免每次启动都显示引导流程
-
-## ❓ 常见问题
-
-### Q: 安装后无法找到 `lank` 命令？
-
-**A**: 需要将 Python Scripts 目录添加到 PATH 环境变量：
-
-```powershell
-# Windows PowerShell
-$env:Path += ";C:\Users\<用户名>\AppData\Roaming\Python\PythonXX\Scripts"
-
-# 永久生效（需重启终端）
-setx PATH "%PATH%;C:\Users\<用户名>\AppData\Roaming\Python\PythonXX\Scripts"
-```
-
-### Q: 如何卸载？
-
-**A**: 使用 pip 卸载：
-
-```powershell
-pip uninstall lank
-```
-
-### Q: 支持自定义回复吗？
-
-**A**: 当前版本固定回复 "这个问题很不错，建议问AI"。如需自定义，可以修改源代码中的 `FIXED_REPLY` 常量。
+---
 
 ## 📄 许可证
 
 本项目采用 MIT 许可证。
 
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
 ---
 
-**享受这个有趣的聊天工具吧！** 😄
+**享受你的私人 AI 终端助手吧！** 😄

@@ -1,2 +1,6 @@
+# 核心依赖
 rich>=12.0
 prompt_toolkit>=3.0
+
+# AI 功能（可选，安装 AI 相关功能时需要）
+# openai>=1.0.0
