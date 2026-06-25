@@ -277,8 +277,10 @@ def _resolve_path(path: str) -> pathlib.Path:
     p = pathlib.Path(path)
     if p.is_absolute():
         return p
-    # 相对于当前工作目录
-    return pathlib.Path.cwd() / p
+    # 相对于当前工作目录（优先使用 os.getcwd()）
+    from ..config import get_working_dir
+    return pathlib.Path(get_working_dir()) / p
+
 
 
 # ===== 注册工具 =====

@@ -4,7 +4,6 @@ TUI 聊天界面模块
 """
 
 import json
-import random
 import sys
 import time
 from datetime import datetime
@@ -18,7 +17,6 @@ from .memory import save_conversation, get_recent_context, get_profile_summary
 from rich.console import Console
 from rich.panel import Panel
 from rich.align import Align
-from rich.live import Live
 from rich.text import Text
 from rich.box import ROUNDED, DOUBLE
 from rich.table import Table
@@ -27,7 +25,7 @@ from rich.table import Table
 try:
     from prompt_toolkit import prompt
     from prompt_toolkit.history import InMemoryHistory
-except Exception:
+except ImportError:
     prompt = input  # type: ignore
     InMemoryHistory = None  # type: ignore
 
@@ -54,10 +52,6 @@ AI_AVATARS = [
 │  ╰─────╯  │
 ◥───────────◤"""
 ]
-
-THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-LOADING_BARS = ["▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
-
 
 def render_chat(console: Console, messages: List[Tuple[str, str]], show_avatar: bool = True):
     """渲染聊天界面"""
@@ -106,38 +100,6 @@ def render_chat(console: Console, messages: List[Tuple[str, str]], show_avatar: 
         highlight=True
     )
     console.print(panel)
-
-
-def show_thinking_animation(console: Console, duration: float = 1.5):
-    """显示思考动画"""
-    frames_count = int(duration * 10)
-    
-    with Live(refresh_per_second=10) as live:
-        for i in range(frames_count):
-            frame = THINKING_FRAMES[i % len(THINKING_FRAMES)]
-            bar = LOADING_BARS[i % len(LOADING_BARS)]
-            
-            progress_width = 30
-            filled = int((i / frames_count) * progress_width)
-            progress_bar = bar * filled + "░" * (progress_width - filled)
-            
-            animation_text = f"""
-[bold yellow]{frame}[/bold yellow] [cyan]AI 神经网络处理中...[/cyan]
-
-[dim]处理进度:[/dim] [yellow]{progress_bar}[/yellow] [bold]{int((i / frames_count) * 100)}%[/bold]
-
-[dim]正在分析语义 • 生成响应 • 优化表达[/dim]
-            """.strip()
-            
-            thinking_panel = Panel(
-                Align.center(animation_text),
-                title="[bold yellow]🧠 思考中[/bold yellow]",
-                border_style="yellow",
-                box=ROUNDED,
-                padding=(1, 2)
-            )
-            live.update(thinking_panel)
-            time.sleep(0.1)
 
 
 def stream_text(console: Console, text: str, speed: float = 0.03):
@@ -245,11 +207,11 @@ def run_tui():
                 ai_history = []
                 continue
             elif cmd == "/save":
-                session_id = save_conversation(ai_history) if ai_history else ""
-                if session_id:
+                if ai_history:
+                    session_id = save_conversation(ai_history)
                     messages.append(("system", f"✅ 对话已保存 (ID: {session_id})"))
                 else:
-                    messages.append(("system", "⚠️ 保存失败或记忆功能未开启"))
+                    messages.append(("system", "⚠️ 没有可保存的对话"))
                 continue
             else:
                 messages.append(("system", f"未知命令: {cmd}，输入 /help 查看帮助"))
@@ -261,18 +223,19 @@ def run_tui():
             # AI 模式
             try:
                 from .ai_client import AIClient
-                
+
                 ai_history.append({"role": "user", "content": user_input.strip()})
-                
-                # 显示思考动画
-                console.print("\n[dim]--- AI 正在思考 ---[/dim]\n")
-                show_thinking_animation(console, duration=1.0)
-                
+
+                # 显示等待提示（不是假动画，只是状态指示）
+                console.print("[dim]AI 正在回复...[/dim]")
+
                 client = AIClient()
-                
+
+                # 流式积累文本
+                streamed_parts = []
+
                 def on_tool_call(name, args, result=None):
                     if result is None:
-                        # 需要确认
                         console.print(f"\n[bold yellow]🔧 AI 想要调用工具: {name}[/bold yellow]")
                         console.print(f"   参数: {json.dumps(args, ensure_ascii=False)}")
                         console.print("[bold]   是否允许? [Y/n]: [/bold]", end="")
@@ -285,31 +248,34 @@ def run_tui():
                             result_str = result_str[:300] + "..."
                         console.print(f"   {result_str}")
                         return True
-                
+
+                def on_text(text):
+                    streamed_parts.append(text)
+                    console.print(text, style="bold magenta", end="")
+
+                console.print("  [bold magenta]🤖 AI: [/bold magenta]", end="")
                 success, response, ai_history = client.chat(
                     messages=ai_history,
-                    stream=False,
+                    stream=True,
                     on_tool_call=on_tool_call,
+                    on_text=on_text,
                 )
-                
+                console.print()  # 流式后换行
+
                 if success:
-                    messages.append(("assistant", response))
+                    messages.append(("assistant", "".join(streamed_parts) or response))
                 else:
                     messages.append(("system", f"⚠️ {response}"))
-                
+
                 # 保存对话
-                save_conversation(ai_history)
-                
+                if ai_history:
+                    save_conversation(ai_history)
+
             except Exception as e:
                 messages.append(("system", f"⚠️ AI 调用失败: {e}"))
         else:
-            # 普通模式 - 固定回复
-            console.print("\n[dim]--- AI 正在思考 ---[/dim]\n")
-            show_thinking_animation(console, duration=random.uniform(1.0, 2.0))
-            
+            # 普通模式 - 固定回复（无延迟）
             console.print("\n[bold magenta]🤖 AI 助手:[/bold magenta] ", end="")
             stream_text(console, FIXED_REPLY, speed=0.02)
-            
+
             messages.append(("assistant", FIXED_REPLY))
-        
-        time.sleep(0.5)
