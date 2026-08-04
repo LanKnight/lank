@@ -143,7 +143,7 @@ lank set reset
 |--------|------|--------|
 | `api_key` | DeepSeek API 密钥 | - |
 | `api_base` | API 地址 | `https://api.deepseek.com` |
-| `model` | 模型名称 | `deepseek-chat` |
+| `model` | 模型名称 | `deepseek-v4-flash` |
 | `user_name` | 用户称呼 | `用户` |
 | `ai_name` | AI 名称 | `LANK` |
 | `temperature` | 温度参数 (0-2) | `0.7` |
