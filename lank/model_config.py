@@ -21,36 +21,30 @@ CLIENT_TIMEOUT = 30.0         # 请求超时（秒）
 CLIENT_MAX_RETRIES = 2        # 失败重试次数
 
 # ============================================================
-# 模型列表 — 全部为 DeepSeek 模型
+# 模型列表 — DeepSeek V4 模型
 # ============================================================
 
 # 每个模型的独立默认值；缺省字段回退到全局 DEFAULT_MODEL_PARAMS
 MODELS: Dict[str, Dict[str, Any]] = {
-    "deepseek-chat": {
-        "name": "DeepSeek Chat",
-        "description": "通用对话模型，适合日常助手任务",
+    "deepseek-v4-flash": {
+        "name": "DeepSeek V4 Flash",
+        "description": "快速响应模型，适合日常助手任务",
         "max_tokens": 4096,
         "supports_tools": True,
     },
-    "deepseek-reasoner": {
-        "name": "DeepSeek Reasoner",
-        "description": "推理增强模型，适合复杂分析任务",
-        "max_tokens": 4096,
-        "supports_tools": True,
-    },
-    "deepseek-coder": {
-        "name": "DeepSeek Coder",
-        "description": "代码专项模型，适合编程相关任务",
+    "deepseek-v4-pro": {
+        "name": "DeepSeek V4 Pro",
+        "description": "高性能模型，适合复杂分析与编程任务",
         "max_tokens": 4096,
         "supports_tools": True,
     },
 }
 
 # 当前使用的模型名称
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-v4-flash"
 
 # 当用户未在配置中指定模型名，或指定的模型不在 MODELS 中时，回退至此值
-FALLBACK_MODEL = "deepseek-chat"
+FALLBACK_MODEL = "deepseek-v4-flash"
 
 # ============================================================
 # 模型参数默认值
