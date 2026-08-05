@@ -25,9 +25,11 @@ from rich.table import Table
 try:
     from prompt_toolkit import prompt
     from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.formatted_text import HTML
 except ImportError:
     prompt = input  # type: ignore
     InMemoryHistory = None  # type: ignore
+    HTML = None  # type: ignore
 
 
 # 常量
@@ -158,14 +160,18 @@ def run_tui():
             console.clear()
             render_chat(console, messages, show_avatar=True)
             
-            # 显示模式指示
-            mode_indicator = "[bold yellow]🤖 AI[/bold yellow]" if ai_mode else "[bold cyan]💬 普通[/bold cyan]"
-            console.print(f"\n[{mode_indicator}] ", end="")
-            
-            if history is not None:
-                user_input = prompt("", history=history)
+            # 显示模式指示（通过 prompt_toolkit 的 HTML 格式化，确保光标正确定位）
+            if HTML is not None:
+                mode_html = "<ansiyellow>🤖 AI</ansiyellow>" if ai_mode else "<ansicyan>💬 普通</ansicyan>"
+                prompt_text = HTML(f"\n[{mode_html}] ")
             else:
-                user_input = prompt("")
+                mode_text = "🤖 AI" if ai_mode else "💬 普通"
+                prompt_text = f"\n[{mode_text}] "
+
+            if history is not None:
+                user_input = prompt(prompt_text, history=history)
+            else:
+                user_input = prompt(prompt_text)
         except (EOFError, KeyboardInterrupt):
             console.print("\n[bold red]感谢使用 LANK AI！再见! 👋[/bold red]")
             break
