@@ -148,8 +148,7 @@ def run_ai_chat(initial_question: Optional[str] = None):
             # 需要用户确认
             console.print(f"\n  [bold yellow]🔧 AI 想要调用工具: {name}[/bold yellow]")
             console.print(f"     [dim]参数: {json.dumps(args, ensure_ascii=False)}[/dim]")
-            console.print("  [bold]是否允许? [Y/n]: [/bold]", end="")
-            ans = input().strip().lower()
+            ans = input("  是否允许? [Y/n]: ").strip().lower()
             return ans not in ("n", "no")
         else:
             # 工具执行完成
@@ -188,8 +187,7 @@ def run_ai_chat(initial_question: Optional[str] = None):
     while True:
         try:
             console.print(f"  [bold cyan]┌─[/bold cyan] [bold]{user_name}[/bold]")
-            console.print(f"  [bold cyan]├[/bold cyan] ", end="")
-            user_input = input().strip()
+            user_input = input("  ├ ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n  [bold cyan]└─[/bold cyan] [dim]再见! 👋[/dim]\n")
             break
