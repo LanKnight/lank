@@ -189,11 +189,42 @@ class AIClient:
             suffix = "\n" + "\n".join(self._config_warnings)
         return True, "就绪" + suffix
 
+    def set_model(self, name: str) -> None:
+        """运行时切换模型（无需重建客户端）"""
+        self.model = name
+        self.temperature = get_model_param(
+            name, "temperature",
+            get_config("temperature", 0.7),
+        )
+        self.max_tokens = get_model_param(
+            name, "max_tokens",
+            get_config("max_tokens", 4096),
+        )
+
     def _build_system_prompt(self) -> str:
-        """构建系统提示词"""
+        """构建系统提示词（含跨会话记忆）"""
         base_prompt = get_config("system_prompt", "")
         tool_desc = get_tool_descriptions()
-        return build_system_prompt(base_prompt, tool_desc)
+        prompt = build_system_prompt(base_prompt, tool_desc)
+
+        # 注入跨会话记忆
+        if get_config("memory_enabled", True):
+            try:
+                from .memory import get_recent_context, get_profile_summary
+
+                context = get_recent_context(max_sessions=2)
+                profile = get_profile_summary()
+                if context or profile:
+                    memory_text = ""
+                    if profile:
+                        memory_text += f"\n\n--- 用户档案 ---\n{profile}"
+                    if context:
+                        memory_text += f"\n\n--- 最近对话摘要 ---\n{context}"
+                    prompt += memory_text
+            except Exception:
+                pass  # 记忆注入失败不影响主流程
+
+        return prompt
 
     def _format_error(self, error: Exception) -> str:
         """格式化错误信息（不暴露敏感信息）"""

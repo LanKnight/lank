@@ -6,7 +6,6 @@ CLI 命令处理模块
 import json
 import os
 import sys
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
@@ -18,10 +17,7 @@ from .memory import save_conversation
 from rich.console import Console
 from rich.panel import Panel
 from rich.align import Align
-from rich.text import Text
-from rich.box import ROUNDED, DOUBLE
-from rich.table import Table
-from rich.markdown import Markdown
+from rich.box import DOUBLE
 
 
 def print_help():
@@ -53,47 +49,42 @@ def print_help():
   lank set             配置 API Key 等
   lank install         安装到系统 PATH
   lank doctor          检查环境配置
+
+聊天命令:
+  /ai /normal          切换 AI/普通模式 (TUI)
+  /clear               清空对话历史
+  /save                保存对话
+  /stats               显示使用统计
+  /theme [名称]        显示/切换主题 (default/dark/cyberpunk/hacker/sunset)
+  /model [名称]        显示/切换 AI 模型
+  /export [json]       导出对话为 Markdown 或 JSON
+  /todo list|add|done|del  管理待办事项
+  /update              检查更新
 """)
 
 
 
 def render_ai_message(console: Console, role: str, content: str, ts: str = ""):
-    """渲染一条 AI 聊天消息"""
-    if not ts:
-        ts = datetime.now().strftime("%H:%M:%S")
+    """渲染一条 AI 聊天消息 — 简洁无边框"""
+    from .utils import get_theme
+
+    theme = get_theme()
 
     if role == "user":
-        text = Text(f"  👤 你: {content}", style="bold cyan")
-        console.print(Panel(
-            Align.right(text),
-            border_style="cyan",
-            box=ROUNDED,
-            padding=(0, 1),
-            width=console.width - 2,
-        ))
+        console.print(
+            f"  [bold {theme['user_color']}]▸ 你:[/bold {theme['user_color']}] {content}"
+        )
     elif role == "assistant":
-        text = Text(f"  🤖 AI: {content}", style="bold magenta")
-        console.print(Panel(
-            Align.left(text),
-            border_style="magenta",
-            box=ROUNDED,
-            padding=(0, 1),
-            width=console.width - 2,
-        ))
+        console.print(
+            f"  [bold {theme['ai_color']}]▸ AI:[/bold {theme['ai_color']}] {content}"
+        )
     elif role == "system":
-        console.print(f"  [dim]{ts}[/dim] [green]⚙️ {content}[/green]")
+        console.print(f"  [dim {theme['system_color']}]⚙ {content}[/dim {theme['system_color']}]")
     elif role == "tool":
         result_str = str(content)
         if len(result_str) > 300:
             result_str = result_str[:300] + "..."
-        console.print(Panel(
-            Text(f"  🔧 {result_str}", style="dim yellow"),
-            border_style="yellow",
-            box=ROUNDED,
-            padding=(0, 1),
-            width=console.width - 2,
-            title="工具结果",
-        ))
+        console.print(f"  [dim yellow]🔧 {result_str}[/dim yellow]")
 
 
 def run_ai_chat(initial_question: Optional[str] = None):
@@ -125,6 +116,9 @@ def run_ai_chat(initial_question: Optional[str] = None):
     ai_name = config.get("ai_name", "LANK")
     user_name = config.get("user_name", "用户")
 
+    from .utils import get_theme, get_stats_summary, list_themes, THEMES, export_conversation, check_for_updates, record_session
+    from .config import set_config
+
     # 清屏并显示标题
     console.clear()
 
@@ -141,9 +135,11 @@ def run_ai_chat(initial_question: Optional[str] = None):
     console.print()
 
     history: List[Dict[str, Any]] = []
+    tool_count = 0
 
     # ── 回调：工具调用 ──
     def on_tool_call(name, args, result=None):
+        nonlocal tool_count
         if result is None:
             # 需要用户确认
             console.print(f"\n  [bold yellow]🔧 AI 想要调用工具: {name}[/bold yellow]")
@@ -152,6 +148,7 @@ def run_ai_chat(initial_question: Optional[str] = None):
             return ans not in ("n", "no")
         else:
             # 工具执行完成
+            tool_count += 1
             render_ai_message(console, "tool", str(result))
             console.print()
             return True
@@ -167,7 +164,8 @@ def run_ai_chat(initial_question: Optional[str] = None):
         console.print()
 
         # 开始流式输出
-        console.print("  [bold magenta]🤖 AI: [/bold magenta]", end="")
+        theme = get_theme()
+        console.print(f"  [bold {theme['ai_color']}]▸ AI: [/bold {theme['ai_color']}]", end="")
         success, response, history = client.chat(
             messages=history,
             stream=True,
@@ -201,7 +199,9 @@ def run_ai_chat(initial_question: Optional[str] = None):
             break
 
         if user_input.startswith("/"):
-            cmd = user_input.lower()
+            cmd_parts = user_input.strip().split(maxsplit=1)
+            cmd = cmd_parts[0].lower()
+            cmd_arg = cmd_parts[1] if len(cmd_parts) > 1 else ""
             if cmd == "/clear":
                 history = []
                 console.clear()
@@ -211,12 +211,16 @@ def run_ai_chat(initial_question: Optional[str] = None):
             elif cmd == "/help":
                 console.print("""
   [bold]可用命令:[/bold]
-    /clear  清空对话历史
-    /help   显示此帮助
-    /save   保存对话
-    /stats  显示使用统计
-    /theme  显示当前主题
-    exit    退出程序
+    /clear   清空对话历史
+    /help    显示此帮助
+    /save    保存对话
+    /stats   显示使用统计
+    /theme   [名称] 显示/切换主题
+    /model   [名称] 显示/切换模型
+    /export  [json] 导出对话
+    /todo    list|add 任务|done 编号|del 编号
+    /update  检查更新
+    exit     退出程序
                 """.strip() + "\n")
                 continue
             elif cmd == "/save":
@@ -228,17 +232,82 @@ def run_ai_chat(initial_question: Optional[str] = None):
                 continue
             elif cmd == "/stats":
                 try:
-                    from .utils import get_stats_summary
                     console.print(f"  {get_stats_summary()}\n")
                 except Exception:
                     console.print("  [yellow]⚠️ 无法获取统计[/yellow]\n")
                 continue
-            elif cmd == "/theme":
+            elif cmd == "/theme" or cmd.startswith("/theme "):
                 try:
-                    from .utils import list_themes
-                    console.print(f"  {list_themes()}\n")
+                    args_theme = user_input.strip().split(maxsplit=1)
+                    if len(args_theme) == 2 and args_theme[1] in THEMES:
+                        set_config("theme", args_theme[1])
+                        console.print(f"  [green]✅ 主题已切换为: {args_theme[1]}[/green]\n")
+                    else:
+                        console.print(f"  {list_themes()}\n")
                 except Exception:
-                    pass
+                    console.print("  [yellow]⚠️ 主题切换失败[/yellow]\n")
+                continue
+            elif cmd == "/export" or cmd.startswith("/export "):
+                if not history:
+                    console.print("  [yellow]⚠️ 没有可导出的对话[/yellow]\n")
+                else:
+                    fmt = "json" if cmd_arg.endswith("json") else "markdown"
+                    path = export_conversation(history, format=fmt)
+                    if path:
+                        console.print(f"  [green]✅ 已导出: {path}[/green]\n")
+                    else:
+                        console.print("  [yellow]⚠️ 导出失败[/yellow]\n")
+                continue
+            elif cmd == "/update":
+                try:
+                    console.print(f"  {check_for_updates()}\n")
+                except Exception:
+                    console.print("  [yellow]⚠️ 无法检查更新[/yellow]\n")
+                continue
+            elif cmd == "/todo" or cmd.startswith("/todo "):
+                try:
+                    from .tools.todo_tools import todo_add, todo_list, todo_done, todo_delete
+
+                    sub_parts = cmd_arg.split(maxsplit=1)
+                    sub = sub_parts[0].lower() if sub_parts else "list"
+                    sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
+
+                    if sub == "list":
+                        result = todo_list()
+                    elif sub == "add" and sub_arg:
+                        result = todo_add(sub_arg)
+                    elif sub == "done" and sub_arg:
+                        try:
+                            result = todo_done(int(sub_arg))
+                        except ValueError:
+                            result = "⚠️ 待办 ID 必须是数字"
+                    elif sub in ("del", "delete") and sub_arg:
+                        try:
+                            result = todo_delete(int(sub_arg))
+                        except ValueError:
+                            result = "⚠️ 待办 ID 必须是数字"
+                    else:
+                        result = "用法: /todo [list|add 任务|done 编号|del 编号]"
+                    console.print(f"  {result}\n")
+                except Exception:
+                    console.print("  [yellow]⚠️ 待办操作失败[/yellow]\n")
+                continue
+            elif cmd == "/model" or cmd.startswith("/model "):
+                try:
+                    from .model_config import list_available_models
+
+                    if cmd_arg:
+                        set_config("model", cmd_arg)
+                        client.set_model(cmd_arg)
+                        console.print(f"  [green]✅ 已切换模型: {cmd_arg}[/green]\n")
+                    else:
+                        current = get_config("model", "deepseek-v4-flash")
+                        lines = [f"当前模型: [bold]{current}[/bold]", "", "可用模型:"]
+                        for m in list_available_models():
+                            lines.append(f"  {m['id']} — {m['name']}: {m['description']}")
+                        console.print("  " + "\n  ".join(lines) + "\n")
+                except Exception:
+                    console.print("  [yellow]⚠️ 模型切换失败[/yellow]\n")
                 continue
             else:
                 console.print(f"  [yellow]⚠️ 未知命令: {cmd}，输入 /help 查看帮助[/yellow]\n")
@@ -252,7 +321,8 @@ def run_ai_chat(initial_question: Optional[str] = None):
         history.append({"role": "user", "content": user_input})
 
         # ── 流式 AI 回复 ──
-        console.print("  [bold magenta]🤖 AI: [/bold magenta]", end="")
+        theme = get_theme()
+        console.print(f"  [bold {theme['ai_color']}]▸ AI: [/bold {theme['ai_color']}]", end="")
         success, response, history = client.chat(
             messages=history,
             stream=True,
@@ -268,6 +338,12 @@ def run_ai_chat(initial_question: Optional[str] = None):
         # 保存对话
         if history:
             save_conversation(history)
+
+    # 记录会话统计
+    try:
+        record_session(len(history), tool_count)
+    except Exception:
+        pass
 
     return 0
 
