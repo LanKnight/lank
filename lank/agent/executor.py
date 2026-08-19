@@ -24,7 +24,8 @@ class Executor:
 
     def execute_plan(self, plan: Plan) -> None:
         """按顺序执行计划中的未完成步骤（含被 review 追加的新步骤）"""
-        pending = [s for s in plan.steps if s.status in (StepStatus.PENDING, StepStatus.BLOCKED)]
+        # 只执行 PENDING（BLOCKED 步骤由 loop 判定终止，不在此自动重试）
+        pending = [s for s in plan.steps if s.status == StepStatus.PENDING]
         prev_summary = self._last_done_summary(plan)
 
         for step in pending:
@@ -81,6 +82,13 @@ class Executor:
             logger.exception("步骤 #%d 执行异常", step.id)
             step.status = StepStatus.BLOCKED
             step.summary = f"执行异常: {e}"
+            return
+
+        if not success:
+            # chat 请求失败（网络/API），明确标记受阻
+            logger.warning("步骤 #%d 请求失败: %.150s", step.id, final_text)
+            step.status = StepStatus.BLOCKED
+            step.summary = (final_text or "执行请求失败")[:200]
             return
 
         # step_done 工具已在工具循环中标记步骤完成

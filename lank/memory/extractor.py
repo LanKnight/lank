@@ -64,19 +64,28 @@ def extract_facts(messages: List[Dict[str, Any]], client=None) -> List[Dict[str,
 
 
 def _parse_facts(response: str) -> List[Dict[str, Any]]:
-    """解析 LLM 返回的 JSON 事实列表"""
+    """解析 LLM 返回的 JSON 事实列表（逐条容错，单个非法值不丢整批）"""
     text = response.strip()
     # 去除可能的代码围栏
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+    def _normalize(item: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(item, dict):
+            return None
+        fact_text = str(item.get("text", "")).strip()
+        if not fact_text:
+            return None
+        try:
+            importance = int(item.get("importance", 1))
+        except (TypeError, ValueError):
+            importance = 1
+        return {"text": fact_text, "importance": importance}
+
     try:
         data = json.loads(text)
         if isinstance(data, list):
-            return [
-                {"text": str(item.get("text", "")).strip(), "importance": int(item.get("importance", 1))}
-                for item in data
-                if isinstance(item, dict) and str(item.get("text", "")).strip()
-            ]
+            return [f for f in (_normalize(i) for i in data) if f]
     except json.JSONDecodeError:
         # 尝试提取 JSON 数组片段
         try:
@@ -84,10 +93,7 @@ def _parse_facts(response: str) -> List[Dict[str, Any]]:
             if start != -1 and end > start:
                 data = json.loads(text[start:end + 1])
                 if isinstance(data, list):
-                    return [
-                        {"text": str(item.get("text", "")).strip(), "importance": int(item.get("importance", 1))}
-                        for item in data if isinstance(item, dict)
-                    ]
+                    return [f for f in (_normalize(i) for i in data) if f]
         except json.JSONDecodeError:
             pass
     return []

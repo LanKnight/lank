@@ -27,6 +27,8 @@ DANGEROUS_PATTERNS: List[str] = [
     # 删除类
     r"\brm\s+-[a-z]*r",          # rm -r / rm -rf
     r"\brm\s+-rf",
+    r"\brm\s+-[a-z]*f",          # rm -f
+    r"\brm\s+--(?:recursive|force)",  # GNU 长选项
     r"\brmdir\s+/[sq]",          # rmdir /s /q
     r"\brd\s+/[sq]",             # rd /s /q
     r"\bRemove-Item",            # PowerShell 删除
@@ -59,6 +61,11 @@ DANGEROUS_PATTERNS: List[str] = [
     r"\bdd\s+of=",
 ]
 
+# 删除类命令（POSIX argv 级拦截：无论旗标都算高危）
+_DELETE_COMMANDS = {"rm", "rmdir", "del", "rd", "erase", "unlink"}
+# rm 带递归/强制旗标才致命；其他删除命令无旗标也拦截
+_DELETE_FATAL_FLAGS = {"-r", "-f", "-rf", "-fr", "--recursive", "--force", "-R"}
+
 _DANGEROUS_REGEX = re.compile("|".join(DANGEROUS_PATTERNS), re.IGNORECASE)
 
 
@@ -67,6 +74,21 @@ def _check_dangerous(command: str) -> Optional[str]:
     match = _DANGEROUS_REGEX.search(command)
     if match:
         return match.group(0)
+    return None
+
+
+def _check_dangerous_argv(argv: List[str]) -> Optional[str]:
+    """对解析后的 argv 做删除类命令检查（黑名单第二道防线，防转义/长选项绕过）"""
+    if not argv:
+        return None
+    cmd = argv[0].lower().split("\\")[-1].split("/")[-1]  # 去掉路径/转义
+    if cmd in _DELETE_COMMANDS:
+        if cmd == "rm":
+            flags = {a.lower() for a in argv[1:] if a.startswith("-")}
+            if flags & _DELETE_FATAL_FLAGS:
+                return argv[0]
+            return None  # rm 单文件不带旗标：允许（仍需确认门）
+        return argv[0]  # del/rd/rmdir/erase/unlink 一律拦截
     return None
 
 
@@ -119,8 +141,16 @@ def execute_command(command: str) -> str:
                 cwd=working_dir,
             )
         else:
-            # 非 Windows：参数化执行（不经过 shell）
+            # 非 Windows：参数化执行（不经过 shell），先对 argv 做删除类检查
             args = shlex.split(command)
+            argv_danger = _check_dangerous_argv(args)
+            if argv_danger:
+                logger.warning("拦截危险命令(argv): %s", argv_danger)
+                return (
+                    f"⛔ 命令已被安全拦截: 检测到危险操作 '{argv_danger}'\n"
+                    f"命令: {command}\n"
+                    f"如确需执行，请手动在终端运行。"
+                )
             result = subprocess.run(
                 args,
                 capture_output=True,

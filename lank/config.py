@@ -6,15 +6,19 @@
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .logs import get_logger
 from .model_config import (
     DEFAULT_API_BASE,
     DEFAULT_MODEL,
     DEFAULT_MODEL_PARAMS,
     DEFAULT_SYSTEM_PROMPT,
 )
+
+logger = get_logger("config")
 
 CONFIG_DIR = Path.home() / ".lank"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -67,6 +71,8 @@ def ensure_config_dir() -> None:
 
 # 进程级配置缓存：避免高频 get_config 反复读盘（优化清单 #6）
 _config_cache: Optional[Dict[str, Any]] = None
+# 被环境变量覆盖的键（保存配置时剥离，保持 env > 文件的优先级语义）
+_env_overrides: set = set()
 
 
 def _invalidate_cache() -> None:
@@ -86,8 +92,9 @@ def load_config() -> Dict[str, Any]:
     带进程级缓存，set_config/save_config 后自动失效。
     """
     global _config_cache
-    if _config_cache is not None:
-        return dict(_config_cache)
+    cached = _config_cache  # 原子读引用，避免判空与复制之间被置 None 的竞态
+    if cached is not None:
+        return dict(cached)
 
     ensure_config_dir()
     if CONFIG_FILE.exists():
@@ -104,35 +111,46 @@ def load_config() -> Dict[str, Any]:
 
     # 环境变量覆盖：OPENAI_API_KEY
     env_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    env_overrides: set = set()
     if env_key:
         merged["api_key"] = env_key
+        env_overrides.add("api_key")
 
     # 环境变量覆盖：OPENAI_API_BASE
     env_base = os.environ.get("OPENAI_API_BASE", "").strip()
     if env_base:
         merged["api_base"] = env_base
+        env_overrides.add("api_base")
 
     # 环境变量覆盖：OPENAI_MODEL
     env_model = os.environ.get("OPENAI_MODEL", "").strip()
     if env_model:
         merged["model"] = env_model
+        env_overrides.add("model")
 
+    global _env_overrides
+    _env_overrides = env_overrides
     _config_cache = merged
     return dict(merged)
 
 
 def save_config(config: Dict[str, Any]) -> bool:
-    """保存配置到文件（原子写，成功后失效缓存）"""
+    """保存配置到文件（原子写，成功后失效缓存；tmp 名唯一防并发写冲突）
+
+    落盘前剥离被环境变量覆盖的键——env 优先级高于文件，
+    不该把 env 注入值固化进 config.json。
+    """
     ensure_config_dir()
-    tmp = CONFIG_FILE.with_suffix(".json.tmp")
+    to_write = {k: v for k, v in config.items() if k not in _env_overrides}
+    tmp = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.{uuid.uuid4().hex[:6]}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+            json.dump(to_write, f, ensure_ascii=False, indent=2)
         os.replace(tmp, CONFIG_FILE)
         _invalidate_cache()
         return True
     except IOError as e:
-        print(f"保存配置失败: {e}")
+        logger.error("保存配置失败: %s", e)
         return False
 
 
@@ -140,6 +158,14 @@ def get_config(key: str, default: Any = None) -> Any:
     """获取单个配置项"""
     config = load_config()
     return config.get(key, default)
+
+
+def get_int(key: str, default: int) -> int:
+    """安全读取整数配置（非法值回退默认，不崩溃）"""
+    try:
+        return int(load_config().get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def set_config(key: str, value: Any) -> bool:

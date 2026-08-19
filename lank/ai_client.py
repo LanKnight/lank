@@ -19,7 +19,7 @@ from .model_config import (
     get_model_param,
     build_system_prompt,
 )
-from .tools import get_all_tools, get_tool_descriptions, execute_tool, needs_approval
+from .tools import get_all_tools, get_tool_descriptions, execute_tool, needs_confirmation
 
 logger = get_logger("ai_client")
 
@@ -27,9 +27,19 @@ logger = get_logger("ai_client")
 # 尝试导入 openai 库
 try:
     from openai import OpenAI
-    from openai import APIConnectionError, APIError, AuthenticationError, RateLimitError
+    from openai import (
+        APIConnectionError,
+        APIError,
+        AuthenticationError,
+        RateLimitError,
+        BadRequestError,
+        InternalServerError,
+        APITimeoutError,
+    )
     HAS_OPENAI = True
-    _RETRYABLE_ERRORS = (RateLimitError, APIConnectionError, APIError)
+    # 只重试可恢复的错误：限流(429)/连接/服务端(5xx)/超时。
+    # 其他 4xx（400/401/403/404/422…）是确定性失败，重试无意义。
+    _RETRYABLE_ERRORS = (RateLimitError, APIConnectionError, InternalServerError, APITimeoutError)
 except ImportError:
     HAS_OPENAI = False
     _RETRYABLE_ERRORS = (Exception,)
@@ -279,6 +289,9 @@ class AIClient:
                     stream=stream,
                     timeout=timeout,
                 )
+            except AuthenticationError:
+                # 认证失败不应重试（401 重试只会浪费等待时间）
+                raise
             except _RETRYABLE_ERRORS as e:
                 if attempt >= retries:
                     raise
@@ -332,7 +345,8 @@ class AIClient:
                     logger.warning("工具 %s 参数 JSON 解析失败: %.200s", func_name, tool_call.function.arguments)
                     func_args = {}
 
-                if needs_approval(func_name) and self.safe_mode:
+                hint = str(func_args.get("command", "")) if func_name == "execute_command" else ""
+                if needs_confirmation(func_name, hint) and self.safe_mode:
                     if on_tool_call:
                         proceed = on_tool_call(func_name, func_args)
                         if not proceed:
@@ -342,6 +356,15 @@ class AIClient:
                                 "content": "操作已取消",
                             })
                             continue
+                    else:
+                        # 需要确认但无确认回调 → 安全默认拒绝，绝不静默执行
+                        logger.warning("无确认回调，拒绝执行需确认的工具: %s", func_name)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": "操作已取消（无确认回调，安全模式拒绝）",
+                        })
+                        continue
 
                 _, result = execute_tool(func_name, func_args)
 
@@ -440,7 +463,8 @@ class AIClient:
                     logger.warning("工具 %s 参数 JSON 解析失败: %.200s", func_name, tc_dict["function"]["arguments"])
                     func_args = {}
 
-                if needs_approval(func_name) and self.safe_mode:
+                hint = str(func_args.get("command", "")) if func_name == "execute_command" else ""
+                if needs_confirmation(func_name, hint) and self.safe_mode:
                     if on_tool_call:
                         proceed = on_tool_call(func_name, func_args)
                         if not proceed:
@@ -450,6 +474,15 @@ class AIClient:
                                 "content": "操作已取消",
                             })
                             continue
+                    else:
+                        # 需要确认但无确认回调 → 安全默认拒绝，绝不静默执行
+                        logger.warning("无确认回调，拒绝执行需确认的工具: %s", func_name)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_dict["id"],
+                            "content": "操作已取消（无确认回调，安全模式拒绝）",
+                        })
+                        continue
 
                 _, result = execute_tool(func_name, func_args)
 

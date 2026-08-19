@@ -102,13 +102,16 @@ def finalize_session(
     client=None,
     prev_summary: str = "",
 ) -> Optional[str]:
-    """会话结束时生成摘要并写入情景记忆
-
-    Returns:
-        摘要文本，失败返回 None
-    """
+    """会话结束时生成摘要并写入情景记忆（增量：自动带上该会话已有旧摘要）"""
     from datetime import datetime
-    from .store import add_summary
+    from .store import add_summary, load_summaries
+
+    if not prev_summary:
+        # 增量滚动：先取该会话已有摘要，避免全量重写丢失前段内容
+        try:
+            prev_summary = load_summaries().get(session_id, {}).get("summary", "")
+        except Exception:
+            prev_summary = ""
 
     summary = summarize_conversation(messages, client=client, prev_summary=prev_summary)
     if summary:

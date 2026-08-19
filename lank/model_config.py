@@ -90,12 +90,12 @@ TOOL_USAGE_PROMPT = """
 # ============================================================
 
 def get_model(name: Optional[str] = None) -> Dict[str, Any]:
-    """获取指定模型的配置，若不存在则返回默认模型"""
+    """获取指定模型的配置，若不存在则返回默认模型（返回副本，防外部污染全局表）"""
     model_name = name or DEFAULT_MODEL
     if model_name in MODELS:
-        return MODELS[model_name]
+        return dict(MODELS[model_name])
     # 回退到默认模型
-    return MODELS.get(FALLBACK_MODEL, {})
+    return dict(MODELS.get(FALLBACK_MODEL, {}))
 
 
 def get_model_param(model_name: Optional[str], param: str, default: Any = None) -> Any:
