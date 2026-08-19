@@ -305,6 +305,28 @@ class TestChatApp(unittest.TestCase):
 
         shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_scroll_no_crash_long_output(self):
+        """回归：长 tool 输出 + 大回看偏移，锚点永不越界（曾崩溃 list index out of range）"""
+        app = self._make_app()
+        for i in range(40):
+            app._add_message("user" if i % 2 == 0 else "assistant", f"第{i}条消息")
+        app._add_message("tool", "\n".join(f"line{n}" for n in range(500)))
+
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.formatted_text.utils import split_lines
+        for bl in (0, 10, 100, 500, 10 ** 6):
+            app._back_lines = bl
+            with app._lock:
+                n_lines = len(list(split_lines(FormattedText(app._build_render_items()))))
+            cp = app._get_cursor_position()
+            self.assertLess(cp.y, n_lines)
+            self.assertGreaterEqual(cp.y, 0)
+        # 底部锚点 = 最后一行
+        app._back_lines = 0
+        with app._lock:
+            n_lines = len(list(split_lines(FormattedText(app._build_render_items()))))
+        self.assertEqual(app._get_cursor_position().y, n_lines - 1)
+
     def test_history_empty(self):
         app = self._make_app()
         app._handle_command("/resume nonexist_session_xyz")
