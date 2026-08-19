@@ -1,416 +1,622 @@
 """
-TUI 聊天界面模块
-支持普通聊天模式和 AI 智能模式
+TUI 全屏聊天界面 - 输入框固定底部，消息内容向上滚动（可回看）
+
+设计（todo.md 需求：输入框一直放下面，其他内容往上面堆）：
+  - prompt_toolkit 全屏应用：消息区 + 底部固定输入框
+  - 消息区自动滚动到底，PageUp/PageDown 回看历史
+  - 普通模式 / AI 模式（ReAct 框架 AgentLoop，后台线程执行）
+  - 工具确认 / 提问通过线程事件桥接（UI 线程 ↔ AI 线程）
 """
 
-import json
-import sys
+import threading
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .config import load_config, get_config, set_config
+from .config import get_config, set_config
 from .logs import setup_logging
-from .memory import save_conversation
-from .utils import get_theme, trim_history
+from .utils import trim_history
 
-# 初始化日志系统
 setup_logging()
 
-# Rich 导入
-from rich.console import Console
-
-# Prompt toolkit
-try:
-    from prompt_toolkit import prompt
-    from prompt_toolkit.history import InMemoryHistory
-    from prompt_toolkit.formatted_text import HTML
-except ImportError:
-    prompt = input  # type: ignore
-    InMemoryHistory = None  # type: ignore
-    HTML = None  # type: ignore
-
-
-# 常量
 FIXED_REPLY = "这个问题很不错，建议问AI"
-_ai_session_id: str = ""  # 会话内复用的记忆 session_id
+
+try:
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+    from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+    from prompt_toolkit.layout.dimension import Dimension as Dim
+    from prompt_toolkit.styles import Style
+    PT_AVAILABLE = True
+except ImportError:
+    PT_AVAILABLE = False
 
 
-def stream_text(console: Console, text: str, speed: float = 0.03):
-    """模拟流式输出效果"""
-    from rich.text import Text
+class ChatApp:
+    """全屏聊天应用：消息区（可回看）+ 底部固定输入框
 
-    output_text = Text()
-    for char in text:
-        output_text.append(char, style="bold magenta")
-        console.print(output_text, end="\r")
-        time.sleep(speed)
-    console.print()
+    Args:
+        ai_only: True = 启动即 AI 模式（lank ai）；False = 可切换普通/AI（lank tui）
+        initial_question: 启动时自动发送的初始问题
+        client: 可注入的 AIClient（由 cli 传入时复用）
+    """
 
+    def __init__(self, ai_only: bool = False, initial_question: Optional[str] = None,
+                 client=None):
+        self.ai_only = ai_only
+        self.initial_question = initial_question
+        self.client = client
+        self.messages: List[Tuple[str, str]] = []      # (role, text)
+        self.ai_mode = ai_only
+        self.ai_history: List[Dict[str, Any]] = []
+        self.tool_count = 0
+        self.session_id: Optional[str] = None
+        self.ai_available = False
+        self.streaming_text = ""
+        self._streamed_parts: List[str] = []
+        self._pending_ask: Optional[Dict[str, Any]] = None  # 待回答的交互
+        self._lock = threading.Lock()
 
-def render_chat(console: Console, messages: List[Tuple[str, str]]):
-    """渲染聊天界面 — 简洁无边框，消息直接堆叠"""
-    theme = get_theme()
+        # prompt_toolkit 组件（PT_AVAILABLE 时创建）
+        self.app: Optional[Application] = None
+        self.message_window: Optional[Window] = None
+        self.input_buffer: Optional[Buffer] = None
+        self.layout = None
+        self._pt_ok = PT_AVAILABLE
 
-    if not messages:
-        console.print(f"[dim](开始新的对话...)[/dim]")
-        return
+    # ═══════════════ 初始化 ═══════════════
 
-    for role, text in messages:
-        if role == "user":
-            console.print(
-                f"[bold {theme['user_color']}]▸ 你:[/bold {theme['user_color']}] {text}"
-            )
-        elif role == "assistant":
-            console.print(
-                f"[bold {theme['ai_color']}]▸ AI:[/bold {theme['ai_color']}] {text}"
-            )
-        else:  # system
-            console.print(f"[dim {theme['system_color']}]⚙ {text}[/dim {theme['system_color']}]")
-        console.print()
-
-
-def run_tui():
-    """运行 TUI 聊天界面"""
-    console = Console()
-    messages: List[Tuple[str, str]] = [("system", "欢迎使用 LANK AI — 输入 /help 查看帮助")]
-
-    history = InMemoryHistory() if InMemoryHistory is not None else None
-
-    # 简洁欢迎信息
-    from . import __version__
-    console.print(f"[bold cyan]LANK AI[/bold cyan] [dim]v{__version__} — 智能终端助手[/dim]")
-    console.print("[dim]输入 /ai 切换 AI 模式 | /help 查看帮助 | exit 退出[/dim]\n")
-
-    # 初始化 AI 客户端（整个会话复用一个实例）
-    client = None
-    ai_available = False
-    try:
-        from .ai_client import AIClient
-
-        client = AIClient()
-        ready, _ = client.is_ready()
-        ai_available = ready
-    except Exception:
-        pass
-
-    ai_mode = False
-    ai_history: List[Dict[str, Any]] = []
-    tool_count = 0
-
-    try:
-        while True:
-            try:
-                console.clear()
-                render_chat(console, messages)
-
-                # 模式指示
-                theme = get_theme()
-                if HTML is not None:
-                    mode_color = theme["ai_color"] if ai_mode else "cyan"
-                    mode_label = "🤖 AI" if ai_mode else "💬 普通"
-                    mode_html = f"<{mode_color}>{mode_label}</{mode_color}>"
-                    prompt_text = HTML(f"\n[{mode_html}] ")
-                else:
-                    mode_text = "🤖 AI" if ai_mode else "💬 普通"
-                    prompt_text = f"\n[{mode_text}] "
-
-                if history is not None:
-                    user_input = prompt(prompt_text, history=history)
-                else:
-                    user_input = prompt(prompt_text)
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[bold green]感谢使用 LANK AI！再见![/bold green]")
-                break
-
-            if not user_input:
-                continue
-
-            # 处理退出
-            if user_input.strip().lower() in ("exit", "quit"):
-                console.print("\n[bold green]感谢使用 LANK AI！祝您有美好的一天![/bold green]")
-                break
-
-            # 处理命令
-            if user_input.strip().startswith("/"):
-                cmd_parts = user_input.strip().split(maxsplit=1)
-                cmd = cmd_parts[0].lower()
-                cmd_arg = cmd_parts[1] if len(cmd_parts) > 1 else ""
-
-                if cmd == "/ai":
-                    if ai_available:
-                        ai_mode = True
-                        messages.append(("system", "已切换到 AI 智能模式"))
-                    else:
-                        messages.append(("system", "⚠️ AI 模式不可用，请先配置 API Key (lank set)"))
-                    continue
-
-                elif cmd == "/normal":
-                    ai_mode = False
-                    messages.append(("system", "已切换到普通聊天模式"))
-                    continue
-
-                elif cmd == "/auto":
-                    try:
-                        from .config import set_config
-                        new_val = not get_config("auto_mode", False)
-                        set_config("auto_mode", new_val)
-                        messages.append(("system", f"✅ 自动模式已{'开启' if new_val else '关闭'}（计划自动确认、审核自动通过）"))
-                    except Exception:
-                        messages.append(("system", "⚠️ 自动模式切换失败"))
-                    continue
-
-                elif cmd == "/help":
-                    messages.append(("system", """
-可用命令:
-  /ai       切换到 AI 智能模式（需配置 API Key）
-  /normal   切换到普通聊天模式
-  /auto     切换自动模式（计划自动确认、审核自动通过）
-  /help     显示此帮助
-  /clear    清空对话
-  /save     保存对话
-  /export   导出对话 (markdown/json)
-  /stats    显示使用统计
-  /theme    显示 / 切换主题 (/theme cyberpunk)
-  /model    显示 / 切换模型 (/model deepseek-v4-pro)
-  /todo     管理待办 (/todo add 任务 | /todo list | /todo done 编号)
-  /update   检查更新
-  exit      退出程序
-                    """.strip()))
-                    continue
-
-                elif cmd == "/clear":
-                    messages = [("system", "对话已清空")]
-                    ai_history = []
-                    continue
-
-                elif cmd == "/save":
-                    if ai_history:
-                        session_id = save_conversation(ai_history)
-                        messages.append(("system", f"✅ 对话已保存 (ID: {session_id})"))
-                    else:
-                        messages.append(("system", "⚠️ 没有可保存的对话"))
-                    continue
-
-                elif cmd == "/export":
-                    try:
-                        from .utils import export_conversation
-                    except ImportError:
-                        messages.append(("system", "⚠️ 导出功能不可用"))
-                        continue
-                    data = ai_history if ai_history else [
-                        {"role": role, "content": text} for role, text in messages
-                    ]
-                    fmt = "json" if cmd_arg.lower() == "json" else "markdown"
-                    path = export_conversation(data, format=fmt)
-                    if path:
-                        messages.append(("system", f"✅ 已导出: {path}"))
-                    else:
-                        messages.append(("system", "⚠️ 没有可导出的内容"))
-                    continue
-
-                elif cmd == "/update":
-                    try:
-                        from .utils import check_for_updates
-
-                        result = check_for_updates()
-                        messages.append(("system", result))
-                    except Exception:
-                        messages.append(("system", "⚠️ 无法检查更新"))
-                    continue
-
-                elif cmd == "/stats":
-                    try:
-                        from .utils import get_stats_summary
-
-                        messages.append(("system", f"\n{get_stats_summary()}"))
-                    except Exception:
-                        messages.append(("system", "⚠️ 无法获取统计"))
-                    continue
-
-                elif cmd == "/theme":
-                    try:
-                        from .utils import list_themes, THEMES
-
-                        if cmd_arg and cmd_arg in THEMES:
-                            set_config("theme", cmd_arg)
-                            messages.append(("system", f"✅ 主题已切换为: {cmd_arg}"))
-                        else:
-                            messages.append(("system", f"\n{list_themes()}"))
-                    except Exception:
-                        messages.append(("system", "⚠️ 主题切换失败"))
-                    continue
-
-                elif cmd == "/model":
-                    try:
-                        from .model_config import list_available_models
-
-                        if cmd_arg:
-                            set_config("model", cmd_arg)
-                            if client:
-                                client.set_model(cmd_arg)
-                            messages.append(("system", f"✅ 已切换模型: {cmd_arg}"))
-                        else:
-                            current = get_config("model", "deepseek-v4-flash")
-                            lines = [f"当前模型: [bold]{current}[/bold]", "", "可用模型:"]
-                            for m in list_available_models():
-                                lines.append(f"  {m['id']} — {m['name']}: {m['description']}")
-                            messages.append(("system", "\n".join(lines)))
-                    except Exception:
-                        messages.append(("system", "⚠️ 模型切换失败"))
-                    continue
-
-                elif cmd == "/todo":
-                    try:
-                        from .tools.todo_tools import todo_add, todo_list, todo_done, todo_delete
-
-                        sub_parts = cmd_arg.split(maxsplit=1)
-                        sub = sub_parts[0].lower() if sub_parts else "list"
-                        sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
-
-                        if sub == "list":
-                            result = todo_list()
-                        elif sub == "add" and sub_arg:
-                            result = todo_add(sub_arg)
-                        elif sub == "done" and sub_arg:
-                            try:
-                                result = todo_done(int(sub_arg))
-                            except ValueError:
-                                result = "⚠️ 待办 ID 必须是数字"
-                        elif sub in ("del", "delete") and sub_arg:
-                            try:
-                                result = todo_delete(int(sub_arg))
-                            except ValueError:
-                                result = "⚠️ 待办 ID 必须是数字"
-                        else:
-                            result = "用法: /todo [list|add 任务|done 编号|del 编号]"
-                        messages.append(("system", result))
-                    except Exception:
-                        messages.append(("system", "⚠️ 待办操作失败"))
-                    continue
-
-                else:
-                    messages.append(("system", f"未知命令: {cmd}，输入 /help 查看帮助"))
-                    continue
-
-            messages.append(("user", user_input.strip()))
-
-            if ai_mode and ai_available and client is not None:
-                # AI 模式（ReAct 框架：分类→规划→执行→审核）
-                try:
-                    from .agent import AgentLoop, AgentCallbacks
-                    from .agent.types import render_plan_text
-                    from .memory import get_relevant_context
-
-                    ai_history.append({"role": "user", "content": user_input.strip()})
-                    ai_history = trim_history(ai_history)
-
-                    # 流式积累文本
-                    streamed_parts = []
-
-                    def on_tool_call(name, args, result=None):
-                        nonlocal tool_count
-                        if result is None:
-                            console.print(f"\n[bold yellow]🔧 AI 想要调用工具: {name}[/bold yellow]")
-                            console.print(f"   参数: {json.dumps(args, ensure_ascii=False)}")
-                            console.print("[bold]   是否允许? [Y/n/a=总是允许]: [/bold]", end="")
-                            ans = input().strip().lower()
-                            if ans == "a":
-                                try:
-                                    from .tools import allow_forever
-                                    hint = str(args.get("command", "")) if name == "execute_command" else ""
-                                    allow_forever(name, hint)
-                                    console.print("[green]   ✅ 已加入白名单[/green]")
-                                except Exception:
-                                    pass
-                                return True
-                            return ans not in ("n", "no")
-                        else:
-                            tool_count += 1
-                            console.print(f"\n[bold cyan]🔧 工具 [{name}] 执行结果:[/bold cyan]")
-                            result_str = str(result)
-                            if len(result_str) > 300:
-                                result_str = result_str[:300] + "..."
-                            console.print(f"   {result_str}")
-                            return True
-
-                    def on_text(text):
-                        streamed_parts.append(text)
-                        console.print(text, style=f"bold {theme['ai_color']}", end="")
-
-                    def on_plan_render(plan):
-                        console.print(f"\n[bold yellow]📋 AI 的执行计划:[/bold yellow]")
-                        for line in render_plan_text(plan).splitlines():
-                            console.print(f"  {line}")
-
-                    def on_plan_confirm(plan):
-                        console.print("[bold]   是否按此计划执行? [Y/n]: [/bold]", end="")
-                        ans = input().strip().lower()
-                        return ans not in ("n", "no")
-
-                    def on_review(verdict):
-                        if verdict.deliverable:
-                            console.print("\n[bold green]✅ 审核通过，可以交付[/bold green]")
-                        else:
-                            console.print("\n[bold yellow]⚠️ 审核未达标:[/bold yellow]")
-                            for issue in verdict.issues[:3]:
-                                console.print(f"  - {issue}")
-
-                    def on_ask_user(question, options):
-                        console.print(f"\n[bold cyan]❓ {question}[/bold cyan]")
-                        if options:
-                            for i, o in enumerate(options, 1):
-                                console.print(f"  {i}. {o}")
-                        return input("  你的回答: ").strip()
-
-                    loop = AgentLoop(client, AgentCallbacks(
-                        on_text=on_text,
-                        on_tool_call=on_tool_call,
-                        on_plan_render=on_plan_render,
-                        on_plan_confirm=on_plan_confirm,
-                        on_review=on_review,
-                        on_ask_user=on_ask_user,
-                    ))
-
-                    try:
-                        memory_text = get_relevant_context(user_input.strip())
-                    except Exception:
-                        memory_text = ""
-
-                    console.print(f"  [bold {theme['ai_color']}]▸ AI: [/bold {theme['ai_color']}]", end="")
-                    result = loop.run(user_input.strip(), memory_text=memory_text)
-                    console.print()  # 流式后换行
-
-                    if result.success:
-                        full = "".join(streamed_parts) or result.response
-                        messages.append(("assistant", full))
-                        ai_history.append({"role": "assistant", "content": result.response or full})
-                    else:
-                        messages.append(("system", f"⚠️ {result.response}"))
-
-                    # 保存对话（会话内复用 session_id）
-                    global _ai_session_id
-                    if ai_history:
-                        try:
-                            sid = save_conversation(ai_history, session_id=_ai_session_id)
-                            if sid:
-                                _ai_session_id = sid
-                        except Exception:
-                            pass
-
-                except Exception as e:
-                    messages.append(("system", f"⚠️ AI 调用失败: {e}"))
-            else:
-                # 普通模式 - 固定回复
-                console.print(f"\n[bold {theme['ai_color']}]▸ AI 助手:[/bold {theme['ai_color']}] ", end="")
-                stream_text(console, FIXED_REPLY, speed=0.02)
-                messages.append(("assistant", FIXED_REPLY))
-
-    finally:
-        # 记录会话统计
+    def _setup_client(self) -> bool:
+        """初始化 AI 客户端；返回是否可用"""
+        if self.client is not None:
+            self.ai_available = True
+            return True
         try:
-            from .utils import record_session
+            from .ai_client import AIClient
+            self.client = AIClient()
+            ready, _ = self.client.is_ready()
+            self.ai_available = ready
+            return ready
+        except Exception:
+            self.ai_available = False
+            return False
 
-            msg_count = sum(1 for r, _ in messages if r in ("user", "assistant"))
-            record_session(msg_count, tool_count)
+    # ═══════════════ 渲染 ═══════════════
+
+    def _render_messages(self):
+        """消息区渲染（每次刷新调用）"""
+        from prompt_toolkit.formatted_text import FormattedText
+        with self._lock:
+            items: List[Tuple[str, str]] = []
+            for role, text in self.messages:
+                if role == "user":
+                    items.append(("class:chat.user", f"▸ 你: {text}\n\n"))
+                elif role == "assistant":
+                    items.append(("class:chat.ai", f"▸ AI: {text}\n\n"))
+                elif role == "tool":
+                    items.append(("class:chat.tool", f"🔧 {str(text)[:300]}\n\n"))
+                else:
+                    items.append(("class:chat.sys", f"⚙ {text}\n\n"))
+            if self.streaming_text:
+                items.append(("class:chat.ai", f"▸ AI: {self.streaming_text}"))
+            elif not self.messages:
+                items.append(("class:chat.sys",
+                              "欢迎使用 LANK — 输入 /help 查看帮助\n"
+                              "输入框固定在底部，PageUp/PageDown 回看历史"))
+        return FormattedText(items)
+
+    def _left_prompt(self):
+        """输入框左侧模式提示"""
+        from prompt_toolkit.formatted_text import FormattedText
+        if self._pending_ask is not None:
+            return FormattedText([("class:chat.sys", ">> ")])
+        mode = "🤖 AI" if self.ai_mode else "💬 普通"
+        return FormattedText([("class:chat.sys", f"[{mode}] ")])
+
+    def _scroll_to_bottom(self) -> None:
+        """消息区滚动到底部（渲染时 clamp 到有效范围）"""
+        if self.message_window is None:
+            return
+        try:
+            self.message_window.vertical_scroll = 10 ** 6
         except Exception:
             pass
+
+    def _invalidate(self) -> None:
+        """刷新界面（线程安全，AI 后台线程可调用）"""
+        if self.app is not None:
+            self._scroll_to_bottom()
+            self.app.invalidate()
+
+    # ═══════════════ 交互桥接（AI 线程 → UI 线程） ═══════════════
+
+    def _ask_sync(self, prompt_text: str, responder: Callable[[str], None]) -> None:
+        """投递问题给 UI，阻塞等待用户回答（AI 线程调用）"""
+        evt = threading.Event()
+
+        def callback(answer: str) -> None:
+            responder(answer)
+            evt.set()
+
+        with self._lock:
+            self.messages.append(("system", f"❓ {prompt_text}"))
+            self._pending_ask = {"callback": callback}
+        self._invalidate()
+        evt.wait()  # 阻塞直到 UI 线程回答
+
+    def confirm_sync(self, question: str) -> bool:
+        """确认交互（AI 线程调用）"""
+        result = {"ok": False}
+
+        def responder(answer: str) -> None:
+            ans = answer.strip().lower()
+            result["ok"] = ans not in ("n", "no", "取消")
+
+        self._ask_sync(question, responder)
+        return result["ok"]
+
+    def ask_user_sync(self, question: str, options: Optional[List[str]] = None) -> str:
+        """提问交互（AI 线程调用）"""
+        result = {"answer": ""}
+        opt_text = "  ".join(f"{i + 1}. {o}" for i, o in enumerate(options or []))
+        if opt_text:
+            question = f"{question}（{opt_text}）"
+
+        def responder(answer: str) -> None:
+            result["answer"] = answer.strip()
+
+        self._ask_sync(question, responder)
+        return result["answer"]
+
+    # ═══════════════ AI 处理（后台线程） ═══════════════
+
+    def _build_callbacks(self):
+        from .agent import AgentCallbacks
+
+        def on_text(text: str) -> None:
+            with self._lock:
+                self.streaming_text += text
+                self._streamed_parts.append(text)
+            self._invalidate()
+
+        def on_tool_call(name, args, result=None):
+            if result is None:
+                import json as _json
+                arg_str = _json.dumps(args, ensure_ascii=False)
+                question = (f"AI 想要调用工具 [{name}]，参数: {arg_str}\n"
+                            f"是否允许? (y=是 / n=否 / a=总是允许)")
+                ans = {"val": ""}
+                self._ask_sync(question, lambda a: ans.update(val=a.strip().lower()))
+                v = ans["val"]
+                if v == "a":
+                    try:
+                        from .tools import allow_forever
+                        hint = str(args.get("command", "")) if name == "execute_command" else ""
+                        allow_forever(name, hint)
+                    except Exception:
+                        pass
+                    return True
+                return v not in ("n", "no")
+            else:
+                with self._lock:
+                    self.tool_count += 1
+                    self.messages.append(("tool", str(result)))
+                self._invalidate()
+                return True
+
+        def on_plan_render(plan):
+            from .agent.types import render_plan_text
+            with self._lock:
+                self.messages.append(("system", "📋 AI 的执行计划:"))
+                for line in render_plan_text(plan).splitlines():
+                    self.messages.append(("system", line))
+            self._invalidate()
+
+        def on_plan_confirm(plan):
+            return self.confirm_sync("是否按此计划执行? (y/n)")
+
+        def on_review(verdict):
+            if verdict.deliverable:
+                with self._lock:
+                    self.messages.append(("system", "✅ 审核通过，可以交付"))
+            else:
+                with self._lock:
+                    self.messages.append(("system", "⚠️ 审核未达标，补充执行:"))
+                    for issue in verdict.issues[:5]:
+                        self.messages.append(("system", f"  - {issue}"))
+            self._invalidate()
+
+        def on_ask_user(question, options):
+            return self.ask_user_sync(question, options)
+
+        return AgentCallbacks(
+            on_text=on_text,
+            on_tool_call=on_tool_call,
+            on_plan_render=on_plan_render,
+            on_plan_confirm=on_plan_confirm,
+            on_review=on_review,
+            on_ask_user=on_ask_user,
+        )
+
+    def _run_ai(self, user_input: str) -> None:
+        """后台线程：执行 AgentLoop（plan→act→review）"""
+        try:
+            from .agent import AgentLoop
+            from .memory import get_relevant_context
+
+            loop = AgentLoop(self.client, self._build_callbacks())
+            try:
+                memory_text = get_relevant_context(user_input)
+            except Exception:
+                memory_text = ""
+
+            with self._lock:
+                self.streaming_text = ""
+                self._streamed_parts = []
+
+            result = loop.run(user_input, memory_text=memory_text)
+
+            with self._lock:
+                full = "".join(self._streamed_parts) or result.response
+                if result.success:
+                    self.messages.append(("assistant", full or result.response))
+                    self.ai_history.append({"role": "assistant",
+                                            "content": result.response or full})
+                else:
+                    self.messages.append(("system", f"⚠️ {result.response}"))
+                self.streaming_text = ""
+            self._invalidate()
+
+            # 保存会话（会话内复用 session_id）
+            try:
+                from .memory import save_conversation
+                if self.ai_history:
+                    sid = save_conversation(self.ai_history, session_id=self.session_id)
+                    if sid:
+                        self.session_id = sid
+            except Exception:
+                pass
+        except Exception as e:
+            with self._lock:
+                self.messages.append(("system", f"⚠️ AI 调用失败: {e}"))
+            self._invalidate()
+
+    # ═══════════════ 输入处理（UI 线程） ═══════════════
+
+    def _handle_input(self, text: str) -> None:
+        """处理一条用户输入（命令 / 普通 / AI）"""
+        if not text or not text.strip():
+            return
+        text = text.strip()
+
+        if text.lower() in ("exit", "quit"):
+            if self.app is not None:
+                self.app.exit()
+            return
+
+        if text.startswith("/"):
+            self._handle_command(text)
+            return
+
+        with self._lock:
+            self.messages.append(("user", text))
+        self._invalidate()
+
+        if self.ai_mode and self.ai_available and self.client is not None:
+            with self._lock:
+                self.ai_history.append({"role": "user", "content": text})
+                self.ai_history = trim_history(self.ai_history)
+            threading.Thread(target=self._run_ai, args=(text,), daemon=True).start()
+        else:
+            if self.ai_mode and not self.ai_available:
+                with self._lock:
+                    self.messages.append(("system", "⚠️ AI 模式不可用，请先配置 API Key (lank set)"))
+                self._invalidate()
+            else:
+                self._stream_reply(FIXED_REPLY)
+
+    def _stream_reply(self, text: str) -> None:
+        """普通模式：模拟流式打字效果"""
+        with self._lock:
+            self.streaming_text = ""
+        for ch in text:
+            with self._lock:
+                self.streaming_text += ch
+            self._invalidate()
+            time.sleep(0.02)
+        with self._lock:
+            self.messages.append(("assistant", text))
+            self.streaming_text = ""
+        self._invalidate()
+
+    def _handle_command(self, text: str) -> None:
+        """处理 /命令，输出追加到消息区"""
+        cmd_parts = text.split(maxsplit=1)
+        cmd = cmd_parts[0].lower()
+        cmd_arg = cmd_parts[1] if len(cmd_parts) > 1 else ""
+        out: List[str] = []
+
+        if cmd == "/ai":
+            if self.ai_available:
+                self.ai_mode = True
+                out.append("已切换到 AI 智能模式")
+            else:
+                out.append("⚠️ AI 模式不可用，请先配置 API Key (lank set)")
+        elif cmd == "/normal":
+            self.ai_mode = False
+            out.append("已切换到普通聊天模式")
+        elif cmd == "/auto":
+            new_val = not get_config("auto_mode", False)
+            set_config("auto_mode", new_val)
+            out.append(f"自动模式已{'开启' if new_val else '关闭'}（计划自动确认、审核自动通过）")
+        elif cmd == "/clear":
+            with self._lock:
+                self.messages = [("system", "对话已清空")]
+                self.ai_history = []
+            self._invalidate()
+            return
+        elif cmd == "/help":
+            out.append("""可用命令:
+  /ai       切换到 AI 智能模式
+  /normal   切换到普通聊天模式
+  /auto     切换自动模式（计划自动确认、审核自动通过）
+  /clear    清空对话
+  /save     保存对话
+  /export   [json] 导出对话
+  /stats    使用统计
+  /theme    [名称] 切换主题
+  /model    [名称] 切换模型
+  /todo     list|add 任务|done 编号|del 编号
+  /update   检查更新
+  exit      退出程序
+  PageUp/PageDown  回看历史消息""")
+        elif cmd == "/save":
+            from .memory import save_conversation
+            if self.ai_history:
+                sid = save_conversation(self.ai_history, session_id=self.session_id)
+                if sid:
+                    self.session_id = sid
+                out.append(f"对话已保存 (ID: {sid})")
+            else:
+                out.append("没有可保存的对话")
+        elif cmd == "/stats":
+            try:
+                from .utils import get_stats_summary
+                out.append(get_stats_summary())
+            except Exception:
+                out.append("无法获取统计")
+        elif cmd == "/theme":
+            try:
+                from .utils import list_themes, THEMES
+                if cmd_arg and cmd_arg in THEMES:
+                    set_config("theme", cmd_arg)
+                    out.append(f"主题已切换为: {cmd_arg}")
+                else:
+                    out.append(list_themes())
+            except Exception:
+                out.append("主题切换失败")
+        elif cmd == "/model":
+            try:
+                from .model_config import list_available_models
+                if cmd_arg:
+                    set_config("model", cmd_arg)
+                    if self.client is not None:
+                        self.client.set_model(cmd_arg)
+                    out.append(f"已切换模型: {cmd_arg}")
+                else:
+                    current = get_config("model", "deepseek-v4-flash")
+                    out.append(f"当前模型: {current}")
+                    for m in list_available_models():
+                        out.append(f"  {m['id']} — {m['name']}: {m['description']}")
+            except Exception:
+                out.append("模型切换失败")
+        elif cmd == "/export":
+            try:
+                from .utils import export_conversation
+                data = self.ai_history or [{"role": r, "content": c} for r, c in self.messages]
+                fmt = "json" if cmd_arg.lower() == "json" else "markdown"
+                path = export_conversation(data, format=fmt)
+                out.append(f"已导出: {path}" if path else "没有可导出的内容")
+            except Exception:
+                out.append("导出失败")
+        elif cmd == "/todo":
+            try:
+                from .tools.todo_tools import todo_add, todo_list, todo_done, todo_delete
+                sub_parts = cmd_arg.split(maxsplit=1)
+                sub = sub_parts[0].lower() if sub_parts else "list"
+                sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
+                if sub == "list":
+                    out.append(todo_list())
+                elif sub == "add" and sub_arg:
+                    out.append(todo_add(sub_arg))
+                elif sub == "done" and sub_arg:
+                    try:
+                        out.append(todo_done(int(sub_arg)))
+                    except ValueError:
+                        out.append("待办 ID 必须是数字")
+                elif sub in ("del", "delete") and sub_arg:
+                    try:
+                        out.append(todo_delete(int(sub_arg)))
+                    except ValueError:
+                        out.append("待办 ID 必须是数字")
+                else:
+                    out.append("用法: /todo [list|add 任务|done 编号|del 编号]")
+            except Exception:
+                out.append("待办操作失败")
+        elif cmd == "/update":
+            try:
+                from .utils import check_for_updates
+                out.append(check_for_updates())
+            except Exception:
+                out.append("无法检查更新")
+        else:
+            out.append(f"未知命令: {cmd}，输入 /help 查看帮助")
+
+        with self._lock:
+            for line in out:
+                self.messages.append(("system", line))
+        self._invalidate()
+
+    # ═══════════════ prompt_toolkit 全屏应用 ═══════════════
+
+    def _build_pt(self, output=None) -> None:
+        """构建 prompt_toolkit 全屏应用
+
+        Args:
+            output: 可注入的输出后端（测试用；默认自动探测终端）
+        """
+        kb = KeyBindings()
+
+        @kb.add("c-c")
+        def _exit(event):
+            event.app.exit()
+
+        @kb.add("pageup")
+        def _pageup(event):
+            if self.message_window is not None:
+                try:
+                    self.message_window.vertical_scroll = max(
+                        0, self.message_window.vertical_scroll - 10)
+                except Exception:
+                    pass
+
+        @kb.add("pagedown")
+        def _pagedown(event):
+            if self.message_window is not None:
+                try:
+                    self.message_window.vertical_scroll = \
+                        self.message_window.vertical_scroll + 10
+                except Exception:
+                    pass
+
+        self.input_buffer = Buffer(
+            multiline=False,
+            history=InMemoryHistory(),
+            accept_handler=lambda buff: self._on_accept(buff),
+        )
+
+        self.message_window = Window(
+            content=FormattedTextControl(self._render_messages),
+            wrap_lines=True,
+            always_hide_cursor=True,
+        )
+        # 输入行：左侧模式指示 + 右侧输入框（固定底部）
+        mode_window = Window(
+            content=FormattedTextControl(self._left_prompt),
+            width=Dim(max=12),
+            height=1,
+            always_hide_cursor=True,
+        )
+        input_window = Window(
+            content=BufferControl(buffer=self.input_buffer, focusable=True),
+            height=Dim(min=1, max=3),
+        )
+        input_row = VSplit([mode_window, input_window])
+
+        self.layout = Layout(
+            HSplit([self.message_window, input_row]),
+            focused_element=input_window,
+        )
+        self.style = Style.from_dict({
+            "chat.user": "fg:#00afff",
+            "chat.ai": "fg:#ff5faf bold",
+            "chat.sys": "fg:#5fd700",
+            "chat.tool": "fg:#d7af00",
+        })
+        self.app = Application(
+            layout=self.layout,
+            key_bindings=kb,
+            style=self.style,
+            full_screen=True,
+            mouse_support=True,
+            output=output,
+        )
+
+    def _on_accept(self, buff: Buffer) -> None:
+        """输入框提交：优先响应待回答的交互"""
+        text = buff.text
+        if self._pending_ask is not None:
+            callback = self._pending_ask["callback"]
+            self._pending_ask = None
+            callback(text)
+        else:
+            self._handle_input(text)
+        buff.reset()
+
+    # ═══════════════ 入口 ═══════════════
+
+    def run(self) -> int:
+        """运行聊天界面（阻塞直到退出）"""
+        if not self._setup_client():
+            if self.ai_only:
+                print("❌ AI 客户端不可用（请先执行 lank set 配置 API Key）")
+                return 1
+
+        if not self._pt_ok:
+            return self._run_fallback()
+
+        self._build_pt()
+
+        # 初始问题（lank ai "..." 启动即执行）
+        if self.initial_question:
+            self._handle_input(self.initial_question)
+
+        self.app.run()
+
+        # 退出：会话总结 + 画像抽取（记忆系统）
+        if self.ai_history and self.session_id:
+            try:
+                from .memory import finalize_session, extract_and_update_profile
+                finalize_session(self.session_id, self.ai_history)
+                if get_config("memory_auto_extract", True):
+                    extract_and_update_profile(self.ai_history)
+            except Exception:
+                pass
+
+        # 会话统计
+        try:
+            from .utils import record_session
+            msg_count = len([m for r, _ in self.messages if r in ("user", "assistant")])
+            record_session(msg_count, self.tool_count)
+        except Exception:
+            pass
+        return 0
+
+    def _run_fallback(self) -> int:
+        """prompt_toolkit 不可用时的降级模式"""
+        print("⚠️ 未安装 prompt_toolkit，使用降级模式（建议: pip install prompt_toolkit）")
+        if self.initial_question:
+            print(f"你: {self.initial_question}")
+        while True:
+            try:
+                text = input("[{}] ".format("AI" if self.ai_mode else "普通")).strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not text:
+                continue
+            if text.lower() in ("exit", "quit"):
+                break
+            if text.startswith("/"):
+                self._handle_command(text)
+                continue
+            print(f"你: {text}")
+            if self.ai_mode and self.ai_available and self.client is not None:
+                t = threading.Thread(target=self._run_ai, args=(text,), daemon=True)
+                t.start()
+                while t.is_alive():
+                    time.sleep(0.1)
+            else:
+                print(f"AI: {FIXED_REPLY}")
+        return 0
+
+
+def run_tui() -> int:
+    """运行 TUI 聊天界面（全屏，输入框固定底部）"""
+    return ChatApp(ai_only=False).run()
+
+
+def run_ai_chat(initial_question: Optional[str] = None, client=None) -> int:
+    """运行 AI 全屏聊天界面（lank ai，输入框固定底部）"""
+    return ChatApp(ai_only=True, initial_question=initial_question, client=client).run()
