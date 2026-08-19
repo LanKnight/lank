@@ -235,10 +235,27 @@ class TestChatApp(unittest.TestCase):
         self.assertIn("可用命令", texts)
         self.assertIn("未知命令", texts)
 
-    def test_scroll_to_bottom(self):
+    def test_scroll_anchor(self):
+        """cursor 锚定滚动：回看时锚点上移，新消息重置回底部"""
         app = self._make_app()
-        app._invalidate()
-        self.assertGreater(app.message_window.vertical_scroll, 0)
+        for i in range(6):
+            app._add_message("user" if i % 2 == 0 else "assistant", f"消息 {i} 内容")
+
+        def anchor_line(ft):
+            pos = 0
+            for style, text in ft:
+                if style == "[SetCursorPosition]":
+                    return pos
+                pos += text.count("\n") + 1
+            return -1
+
+        app._back_lines = 0
+        bottom = anchor_line(app._render_messages())
+        app._back_lines = 50
+        top = anchor_line(app._render_messages())
+        self.assertLess(top, bottom)          # 回看：锚点移向顶部
+        app._add_message("system", "新消息")
+        self.assertEqual(app._back_lines, 0)  # 新消息：重置回底部
 
     def test_ask_bridge(self):
         """AI 线程提问 ↔ UI 线程回答 桥接"""

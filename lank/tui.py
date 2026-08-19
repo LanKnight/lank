@@ -57,6 +57,7 @@ class ChatApp:
         self.streaming_text = ""
         self._streamed_parts: List[str] = []
         self._pending_ask: Optional[Dict[str, Any]] = None  # 待回答的交互
+        self._back_lines = 0      # 回看行数（0=底部），PageUp/PageDown 调整
         self._lock = threading.Lock()
 
         # prompt_toolkit 组件（PT_AVAILABLE 时创建）
@@ -86,7 +87,11 @@ class ChatApp:
     # ═══════════════ 渲染 ═══════════════
 
     def _render_messages(self):
-        """消息区渲染（每次刷新调用）"""
+        """消息区渲染（每次刷新调用）
+
+        滚动机制：在「当前查看位置」插入 [SetCursorPosition] 片段，
+        prompt_toolkit 渲染时会自动滚动到该行可见（cursor 锚定法）。
+        """
         from prompt_toolkit.formatted_text import FormattedText
         with self._lock:
             items: List[Tuple[str, str]] = []
@@ -105,7 +110,23 @@ class ChatApp:
                 items.append(("class:chat.sys",
                               "欢迎使用 LANK — 输入 /help 查看帮助\n"
                               "输入框固定在底部，PageUp/PageDown 回看历史"))
-        return FormattedText(items)
+
+            # 计算逻辑总行数，并在锚点行插入 cursor 标记
+            total_lines = sum(text.count("\n") for _, text in items) + len(items)
+            anchor = max(0, total_lines - 1 - self._back_lines)
+
+            cursor_inserted = False
+            rendered: List[Tuple[str, str]] = []
+            line_no = 0
+            for style, text in items:
+                if not cursor_inserted and line_no >= anchor:
+                    rendered.append(("[SetCursorPosition]", ""))
+                    cursor_inserted = True
+                rendered.append((style, text))
+                line_no += text.count("\n") + 1
+            if not cursor_inserted:
+                rendered.append(("[SetCursorPosition]", ""))
+        return FormattedText(rendered)
 
     def _left_prompt(self):
         """输入框左侧模式提示"""
@@ -116,18 +137,19 @@ class ChatApp:
         return FormattedText([("class:chat.sys", f"[{mode}] ")])
 
     def _scroll_to_bottom(self) -> None:
-        """消息区滚动到底部（渲染时 clamp 到有效范围）"""
-        if self.message_window is None:
-            return
-        try:
-            self.message_window.vertical_scroll = 10 ** 6
-        except Exception:
-            pass
+        """回到消息区底部（重置回看位置）"""
+        self._back_lines = 0
+
+    def _add_message(self, role: str, text: str) -> None:
+        """追加一条消息并刷新（自动回到最新位置）"""
+        with self._lock:
+            self.messages.append((role, text))
+        self._back_lines = 0
+        self._invalidate()
 
     def _invalidate(self) -> None:
         """刷新界面（线程安全，AI 后台线程可调用）"""
         if self.app is not None:
-            self._scroll_to_bottom()
             self.app.invalidate()
 
     # ═══════════════ 交互桥接（AI 线程 → UI 线程） ═══════════════
@@ -141,9 +163,8 @@ class ChatApp:
             evt.set()
 
         with self._lock:
-            self.messages.append(("system", f"❓ {prompt_text}"))
             self._pending_ask = {"callback": callback}
-        self._invalidate()
+        self._add_message("system", f"❓ {prompt_text}")
         evt.wait()  # 阻塞直到 UI 线程回答
 
     def confirm_sync(self, question: str) -> bool:
@@ -202,31 +223,25 @@ class ChatApp:
             else:
                 with self._lock:
                     self.tool_count += 1
-                    self.messages.append(("tool", str(result)))
-                self._invalidate()
+                self._add_message("tool", str(result))
                 return True
 
         def on_plan_render(plan):
             from .agent.types import render_plan_text
-            with self._lock:
-                self.messages.append(("system", "📋 AI 的执行计划:"))
-                for line in render_plan_text(plan).splitlines():
-                    self.messages.append(("system", line))
-            self._invalidate()
+            self._add_message("system", "📋 AI 的执行计划:")
+            for line in render_plan_text(plan).splitlines():
+                self._add_message("system", line)
 
         def on_plan_confirm(plan):
             return self.confirm_sync("是否按此计划执行? (y/n)")
 
         def on_review(verdict):
             if verdict.deliverable:
-                with self._lock:
-                    self.messages.append(("system", "✅ 审核通过，可以交付"))
+                self._add_message("system", "✅ 审核通过，可以交付")
             else:
-                with self._lock:
-                    self.messages.append(("system", "⚠️ 审核未达标，补充执行:"))
-                    for issue in verdict.issues[:5]:
-                        self.messages.append(("system", f"  - {issue}"))
-            self._invalidate()
+                self._add_message("system", "⚠️ 审核未达标，补充执行:")
+                for issue in verdict.issues[:5]:
+                    self._add_message("system", f"  - {issue}")
 
         def on_ask_user(question, options):
             return self.ask_user_sync(question, options)
@@ -261,13 +276,13 @@ class ChatApp:
             with self._lock:
                 full = "".join(self._streamed_parts) or result.response
                 if result.success:
-                    self.messages.append(("assistant", full or result.response))
                     self.ai_history.append({"role": "assistant",
                                             "content": result.response or full})
-                else:
-                    self.messages.append(("system", f"⚠️ {result.response}"))
                 self.streaming_text = ""
-            self._invalidate()
+            if result.success:
+                self._add_message("assistant", full or result.response)
+            else:
+                self._add_message("system", f"⚠️ {result.response}")
 
             # 保存会话（会话内复用 session_id）
             try:
@@ -279,9 +294,7 @@ class ChatApp:
             except Exception:
                 pass
         except Exception as e:
-            with self._lock:
-                self.messages.append(("system", f"⚠️ AI 调用失败: {e}"))
-            self._invalidate()
+            self._add_message("system", f"⚠️ AI 调用失败: {e}")
 
     # ═══════════════ 输入处理（UI 线程） ═══════════════
 
@@ -300,9 +313,7 @@ class ChatApp:
             self._handle_command(text)
             return
 
-        with self._lock:
-            self.messages.append(("user", text))
-        self._invalidate()
+        self._add_message("user", text)
 
         if self.ai_mode and self.ai_available and self.client is not None:
             with self._lock:
@@ -311,9 +322,7 @@ class ChatApp:
             threading.Thread(target=self._run_ai, args=(text,), daemon=True).start()
         else:
             if self.ai_mode and not self.ai_available:
-                with self._lock:
-                    self.messages.append(("system", "⚠️ AI 模式不可用，请先配置 API Key (lank set)"))
-                self._invalidate()
+                self._add_message("system", "⚠️ AI 模式不可用，请先配置 API Key (lank set)")
             else:
                 self._stream_reply(FIXED_REPLY)
 
@@ -327,9 +336,8 @@ class ChatApp:
             self._invalidate()
             time.sleep(0.02)
         with self._lock:
-            self.messages.append(("assistant", text))
             self.streaming_text = ""
-        self._invalidate()
+        self._add_message("assistant", text)
 
     def _handle_command(self, text: str) -> None:
         """处理 /命令，输出追加到消息区"""
@@ -355,6 +363,7 @@ class ChatApp:
             with self._lock:
                 self.messages = [("system", "对话已清空")]
                 self.ai_history = []
+            self._back_lines = 0
             self._invalidate()
             return
         elif cmd == "/help":
@@ -455,9 +464,9 @@ class ChatApp:
             out.append(f"未知命令: {cmd}，输入 /help 查看帮助")
 
         with self._lock:
-            for line in out:
-                self.messages.append(("system", line))
-        self._invalidate()
+            lines = list(out)
+        for line in lines:
+            self._add_message("system", line)
 
     # ═══════════════ prompt_toolkit 全屏应用 ═══════════════
 
@@ -475,21 +484,21 @@ class ChatApp:
 
         @kb.add("pageup")
         def _pageup(event):
-            if self.message_window is not None:
-                try:
-                    self.message_window.vertical_scroll = max(
-                        0, self.message_window.vertical_scroll - 10)
-                except Exception:
-                    pass
+            # 向上回看 10 行
+            self._back_lines = min(self._back_lines + 10, 10 ** 6)
 
         @kb.add("pagedown")
         def _pagedown(event):
-            if self.message_window is not None:
-                try:
-                    self.message_window.vertical_scroll = \
-                        self.message_window.vertical_scroll + 10
-                except Exception:
-                    pass
+            # 向下回到最新
+            self._back_lines = max(0, self._back_lines - 10)
+
+        @kb.add("c-home")
+        def _to_top(event):
+            self._back_lines = 10 ** 6
+
+        @kb.add("c-end")
+        def _to_bottom(event):
+            self._back_lines = 0
 
         self.input_buffer = Buffer(
             multiline=False,
@@ -563,17 +572,27 @@ class ChatApp:
         if self.initial_question:
             self._handle_input(self.initial_question)
 
-        self.app.run()
+        try:
+            self.app.run()
+        except KeyboardInterrupt:
+            # 双重 Ctrl+C 硬中断也正常退出，不抛 traceback
+            pass
 
         # 退出：会话总结 + 画像抽取（记忆系统）
+        # 放后台线程执行（短超时），绝不阻塞退出；最多等 5 秒
         if self.ai_history and self.session_id:
-            try:
-                from .memory import finalize_session, extract_and_update_profile
-                finalize_session(self.session_id, self.ai_history)
-                if get_config("memory_auto_extract", True):
-                    extract_and_update_profile(self.ai_history)
-            except Exception:
-                pass
+            def _finalize():
+                try:
+                    from .memory import finalize_session, extract_and_update_profile
+                    finalize_session(self.session_id, self.ai_history)
+                    if get_config("memory_auto_extract", True):
+                        extract_and_update_profile(self.ai_history)
+                except BaseException:
+                    pass  # 总结失败不影响退出
+
+            t = threading.Thread(target=_finalize, daemon=True)
+            t.start()
+            t.join(5)
 
         # 会话统计
         try:
@@ -609,6 +628,19 @@ class ChatApp:
                     time.sleep(0.1)
             else:
                 print(f"AI: {FIXED_REPLY}")
+        # 降级模式也尝试会话总结（非阻塞）
+        if self.ai_history and self.session_id:
+            try:
+                from .memory import finalize_session, extract_and_update_profile
+                t = threading.Thread(
+                    target=lambda: (finalize_session(self.session_id, self.ai_history),
+                                    extract_and_update_profile(self.ai_history)
+                                    if get_config("memory_auto_extract", True) else None),
+                    daemon=True)
+                t.start()
+                t.join(5)
+            except BaseException:
+                pass
         return 0
 
 

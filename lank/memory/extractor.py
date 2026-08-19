@@ -47,9 +47,12 @@ def extract_facts(messages: List[Dict[str, Any]], client=None) -> List[Dict[str,
         if len(content) < 20:
             return []
         prompt = _EXTRACT_PROMPT.format(messages=content[-6000:])
+        # 抽取是次要功能：短超时 + 不重试，失败静默
         success, response, _ = client.complete(
             [{"role": "user", "content": prompt}],
             system_prompt="你是 LANK 的记忆抽取器，只输出 JSON。",
+            timeout=8.0,
+            retry=0,
         )
         if not success:
             return []

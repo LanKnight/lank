@@ -53,9 +53,12 @@ def _call_llm_summarize(messages: List[Dict[str, Any]], prev_summary: str, max_c
             prev_summary=prev_summary[:1000] or "（无）",
             messages=content[-8000:],
         )
+        # 总结是次要功能：短超时 + 不重试，失败快速返回，绝不阻塞主流程
         success, response, _ = client.complete(
             [{"role": "user", "content": prompt}],
             system_prompt="你是 LANK 的记忆总结器。",
+            timeout=8.0,
+            retry=0,
         )
         if success and response:
             return response.strip()[:max_chars * 2]
