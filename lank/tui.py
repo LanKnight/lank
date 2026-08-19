@@ -9,8 +9,12 @@ import time
 from typing import Any, Dict, List, Tuple
 
 from .config import load_config, get_config, set_config
+from .logs import setup_logging
 from .memory import save_conversation
-from .utils import get_theme
+from .utils import get_theme, trim_history
+
+# 初始化日志系统
+setup_logging()
 
 # Rich 导入
 from rich.console import Console
@@ -28,6 +32,7 @@ except ImportError:
 
 # 常量
 FIXED_REPLY = "这个问题很不错，建议问AI"
+_ai_session_id: str = ""  # 会话内复用的记忆 session_id
 
 
 def stream_text(console: Console, text: str, speed: float = 0.03):
@@ -72,7 +77,8 @@ def run_tui():
     history = InMemoryHistory() if InMemoryHistory is not None else None
 
     # 简洁欢迎信息
-    console.print("[bold cyan]LANK AI[/bold cyan] [dim]v0.2.0 — 智能终端助手[/dim]")
+    from . import __version__
+    console.print(f"[bold cyan]LANK AI[/bold cyan] [dim]v{__version__} — 智能终端助手[/dim]")
     console.print("[dim]输入 /ai 切换 AI 模式 | /help 查看帮助 | exit 退出[/dim]\n")
 
     # 初始化 AI 客户端（整个会话复用一个实例）
@@ -143,11 +149,22 @@ def run_tui():
                     messages.append(("system", "已切换到普通聊天模式"))
                     continue
 
+                elif cmd == "/auto":
+                    try:
+                        from .config import set_config
+                        new_val = not get_config("auto_mode", False)
+                        set_config("auto_mode", new_val)
+                        messages.append(("system", f"✅ 自动模式已{'开启' if new_val else '关闭'}（计划自动确认、审核自动通过）"))
+                    except Exception:
+                        messages.append(("system", "⚠️ 自动模式切换失败"))
+                    continue
+
                 elif cmd == "/help":
                     messages.append(("system", """
 可用命令:
   /ai       切换到 AI 智能模式（需配置 API Key）
   /normal   切换到普通聊天模式
+  /auto     切换自动模式（计划自动确认、审核自动通过）
   /help     显示此帮助
   /clear    清空对话
   /save     保存对话
@@ -278,9 +295,14 @@ def run_tui():
             messages.append(("user", user_input.strip()))
 
             if ai_mode and ai_available and client is not None:
-                # AI 模式
+                # AI 模式（ReAct 框架：分类→规划→执行→审核）
                 try:
+                    from .agent import AgentLoop, AgentCallbacks
+                    from .agent.types import render_plan_text
+                    from .memory import get_relevant_context
+
                     ai_history.append({"role": "user", "content": user_input.strip()})
+                    ai_history = trim_history(ai_history)
 
                     # 流式积累文本
                     streamed_parts = []
@@ -290,8 +312,17 @@ def run_tui():
                         if result is None:
                             console.print(f"\n[bold yellow]🔧 AI 想要调用工具: {name}[/bold yellow]")
                             console.print(f"   参数: {json.dumps(args, ensure_ascii=False)}")
-                            console.print("[bold]   是否允许? [Y/n]: [/bold]", end="")
+                            console.print("[bold]   是否允许? [Y/n/a=总是允许]: [/bold]", end="")
                             ans = input().strip().lower()
+                            if ans == "a":
+                                try:
+                                    from .tools import allow_forever
+                                    hint = str(args.get("command", "")) if name == "execute_command" else ""
+                                    allow_forever(name, hint)
+                                    console.print("[green]   ✅ 已加入白名单[/green]")
+                                except Exception:
+                                    pass
+                                return True
                             return ans not in ("n", "no")
                         else:
                             tool_count += 1
@@ -306,23 +337,65 @@ def run_tui():
                         streamed_parts.append(text)
                         console.print(text, style=f"bold {theme['ai_color']}", end="")
 
-                    console.print(f"  [bold {theme['ai_color']}]▸ AI: [/bold {theme['ai_color']}]", end="")
-                    success, response, ai_history = client.chat(
-                        messages=ai_history,
-                        stream=True,
-                        on_tool_call=on_tool_call,
+                    def on_plan_render(plan):
+                        console.print(f"\n[bold yellow]📋 AI 的执行计划:[/bold yellow]")
+                        for line in render_plan_text(plan).splitlines():
+                            console.print(f"  {line}")
+
+                    def on_plan_confirm(plan):
+                        console.print("[bold]   是否按此计划执行? [Y/n]: [/bold]", end="")
+                        ans = input().strip().lower()
+                        return ans not in ("n", "no")
+
+                    def on_review(verdict):
+                        if verdict.deliverable:
+                            console.print("\n[bold green]✅ 审核通过，可以交付[/bold green]")
+                        else:
+                            console.print("\n[bold yellow]⚠️ 审核未达标:[/bold yellow]")
+                            for issue in verdict.issues[:3]:
+                                console.print(f"  - {issue}")
+
+                    def on_ask_user(question, options):
+                        console.print(f"\n[bold cyan]❓ {question}[/bold cyan]")
+                        if options:
+                            for i, o in enumerate(options, 1):
+                                console.print(f"  {i}. {o}")
+                        return input("  你的回答: ").strip()
+
+                    loop = AgentLoop(client, AgentCallbacks(
                         on_text=on_text,
-                    )
+                        on_tool_call=on_tool_call,
+                        on_plan_render=on_plan_render,
+                        on_plan_confirm=on_plan_confirm,
+                        on_review=on_review,
+                        on_ask_user=on_ask_user,
+                    ))
+
+                    try:
+                        memory_text = get_relevant_context(user_input.strip())
+                    except Exception:
+                        memory_text = ""
+
+                    console.print(f"  [bold {theme['ai_color']}]▸ AI: [/bold {theme['ai_color']}]", end="")
+                    result = loop.run(user_input.strip(), memory_text=memory_text)
                     console.print()  # 流式后换行
 
-                    if success:
-                        messages.append(("assistant", "".join(streamed_parts) or response))
+                    if result.success:
+                        full = "".join(streamed_parts) or result.response
+                        messages.append(("assistant", full))
+                        ai_history.append({"role": "assistant", "content": result.response or full})
                     else:
-                        messages.append(("system", f"⚠️ {response}"))
+                        messages.append(("system", f"⚠️ {result.response}"))
 
-                    # 保存对话
+                    # 保存对话（会话内复用 session_id）
+                    global _ai_session_id
                     if ai_history:
-                        save_conversation(ai_history)
+                        try:
+                            sid = save_conversation(ai_history, session_id=_ai_session_id)
+                            if sid:
+                                _ai_session_id = sid
+                        except Exception:
+                            pass
 
                 except Exception as e:
                     messages.append(("system", f"⚠️ AI 调用失败: {e}"))

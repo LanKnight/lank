@@ -10,8 +10,12 @@ from typing import Any, Dict, List, Optional
 
 
 from .config import run_set_command, load_config, get_config
+from .logs import setup_logging
 from .tui import run_tui
 from .memory import save_conversation
+
+# 初始化日志系统
+setup_logging()
 
 # Rich 导入
 from rich.console import Console
@@ -22,10 +26,11 @@ from rich.box import DOUBLE
 
 def print_help():
     """打印帮助信息"""
-    print("""
+    from . import __version__
+    print(f"""
 ╔══════════════════════════════════════════════════╗
 ║              LANK - 私人 AI 终端助手              ║
-║                  v0.2.0                          ║
+║                  v{__version__:<29}║
 ╚══════════════════════════════════════════════════╝
 
 用法:
@@ -88,7 +93,7 @@ def render_ai_message(console: Console, role: str, content: str, ts: str = ""):
 
 
 def run_ai_chat(initial_question: Optional[str] = None):
-    """运行 AI 聊天界面（带流式输出）
+    """运行 AI 聊天界面（ReAct 框架接入：分类→规划→执行→审核）
 
     Args:
         initial_question: 初始问题（可选）
@@ -116,8 +121,12 @@ def run_ai_chat(initial_question: Optional[str] = None):
     ai_name = config.get("ai_name", "LANK")
     user_name = config.get("user_name", "用户")
 
-    from .utils import get_theme, get_stats_summary, list_themes, THEMES, export_conversation, check_for_updates, record_session
+    from .utils import (get_theme, get_stats_summary, list_themes, THEMES,
+                        export_conversation, check_for_updates, record_session, trim_history)
     from .config import set_config
+    from .memory import save_conversation, get_relevant_context
+    from .agent import AgentLoop, AgentCallbacks
+    from .agent.types import render_plan_text
 
     # 清屏并显示标题
     console.clear()
@@ -125,7 +134,7 @@ def run_ai_chat(initial_question: Optional[str] = None):
     title = Panel(
         Align.center(
             f"[bold cyan]🤖 {ai_name} AI 聊天[/bold cyan]\n"
-            f"[dim]输入 exit 退出 | /clear 清空 | /help 帮助[/dim]"
+            f"[dim]输入 exit 退出 | /clear 清空 | /help 帮助 | /auto 切换自动模式[/dim]"
         ),
         border_style="bright_cyan",
         box=DOUBLE,
@@ -136,15 +145,26 @@ def run_ai_chat(initial_question: Optional[str] = None):
 
     history: List[Dict[str, Any]] = []
     tool_count = 0
+    session_id: Optional[str] = None
 
-    # ── 回调：工具调用 ──
+    # ── 回调：工具调用（确认 + 结果展示，支持永久放行） ──
     def on_tool_call(name, args, result=None):
         nonlocal tool_count
         if result is None:
             # 需要用户确认
             console.print(f"\n  [bold yellow]🔧 AI 想要调用工具: {name}[/bold yellow]")
             console.print(f"     [dim]参数: {json.dumps(args, ensure_ascii=False)}[/dim]")
-            ans = input("  是否允许? [Y/n]: ").strip().lower()
+            console.print("  是否允许? [Y/n/a=总是允许]: ", end="")
+            ans = input().strip().lower()
+            if ans == "a":
+                try:
+                    from .tools import allow_forever
+                    hint = str(args.get("command", "")) if name == "execute_command" else ""
+                    allow_forever(name, hint)
+                    console.print("  [green]✅ 已加入白名单，以后自动执行[/green]")
+                except Exception:
+                    pass
+                return True
             return ans not in ("n", "no")
         else:
             # 工具执行完成
@@ -157,29 +177,68 @@ def run_ai_chat(initial_question: Optional[str] = None):
     def on_text(text):
         console.print(text, style="bold magenta", end="")
 
-    # ── 初始问题处理 ──
-    if initial_question:
-        history.append({"role": "user", "content": initial_question})
-        render_ai_message(console, "user", initial_question)
-        console.print()
+    # ── 回调：计划展示与确认 ──
+    def on_plan_render(plan):
+        console.print(f"\n  [bold yellow]📋 AI 的执行计划:[/bold yellow]")
+        for line in render_plan_text(plan).splitlines():
+            console.print(f"  {line}")
 
-        # 开始流式输出
+    def on_plan_confirm(plan):
+        ans = input("\n  是否按此计划执行? [Y/n]: ").strip().lower()
+        return ans not in ("n", "no")
+
+    # ── 回调：审核展示 ──
+    def on_review(verdict):
+        if verdict.deliverable:
+            console.print("\n  [bold green]✅ 审核通过，可以交付[/bold green]")
+        else:
+            console.print("\n  [bold yellow]⚠️ 审核未达标，补充执行:[/bold yellow]")
+            for issue in verdict.issues[:5]:
+                console.print(f"    - {issue}")
+
+    # ── 回调：向用户提问 ──
+    def on_ask_user(question, options):
+        console.print(f"\n  [bold cyan]❓ {question}[/bold cyan]")
+        if options:
+            for i, o in enumerate(options, 1):
+                console.print(f"    {i}. {o}")
+        return input("  你的回答: ").strip()
+
+    callbacks = AgentCallbacks(
+        on_text=on_text,
+        on_tool_call=on_tool_call,
+        on_plan_render=on_plan_render,
+        on_plan_confirm=on_plan_confirm,
+        on_review=on_review,
+        on_ask_user=on_ask_user,
+    )
+    loop = AgentLoop(client, callbacks)
+
+    def ask_ai(user_input: str) -> Optional[str]:
+        """调用 AgentLoop，返回最终回复文本（失败返回 None）"""
+        memory_text = ""
+        try:
+            memory_text = get_relevant_context(user_input)
+        except Exception:
+            pass
         theme = get_theme()
         console.print(f"  [bold {theme['ai_color']}]▸ AI: [/bold {theme['ai_color']}]", end="")
-        success, response, history = client.chat(
-            messages=history,
-            stream=True,
-            on_tool_call=on_tool_call,
-            on_text=on_text,
-        )
+        result = loop.run(user_input, memory_text=memory_text)
         console.print()  # 流式结束换行
+        if not result.success:
+            console.print(f"  [bold red]{result.response}[/bold red]")
+            return None
+        return result.response
 
-        if not success:
-            console.print(f"  [bold red]{response}[/bold red]")
-            console.print()
-
-        if history:
-            save_conversation(history)
+    # ── 初始问题处理 ──
+    if initial_question:
+        render_ai_message(console, "user", initial_question)
+        console.print()
+        history.append({"role": "user", "content": initial_question})
+        history = trim_history(history)
+        response = ask_ai(initial_question)
+        if response:
+            history.append({"role": "assistant", "content": response})
 
     # ── 主循环 ──
     while True:
@@ -193,7 +252,7 @@ def run_ai_chat(initial_question: Optional[str] = None):
         if not user_input:
             continue
 
-        # 处理命令
+        # 处理退出
         if user_input.lower() in ("exit", "quit"):
             console.print(f"  [bold cyan]└─[/bold cyan] [bold green]感谢使用 {ai_name}！再见! 👋[/bold green]\n")
             break
@@ -208,10 +267,17 @@ def run_ai_chat(initial_question: Optional[str] = None):
                 console.print(title)
                 console.print("  [green]✅ 对话已清空[/green]\n")
                 continue
+            elif cmd == "/auto":
+                new_val = not get_config("auto_mode", False)
+                set_config("auto_mode", new_val)
+                console.print(f"  [green]✅ 自动模式已{'开启' if new_val else '关闭'}"
+                              f"（计划自动确认、审核自动通过）[/green]\n")
+                continue
             elif cmd == "/help":
                 console.print("""
   [bold]可用命令:[/bold]
     /clear   清空对话历史
+    /auto    切换自动模式（计划自动确认、审核自动通过）
     /help    显示此帮助
     /save    保存对话
     /stats   显示使用统计
@@ -225,8 +291,10 @@ def run_ai_chat(initial_question: Optional[str] = None):
                 continue
             elif cmd == "/save":
                 if history:
-                    session_id = save_conversation(history)
-                    console.print(f"  [green]✅ 对话已保存 (ID: {session_id})[/green]\n")
+                    sid = save_conversation(history, session_id=session_id)
+                    if sid:
+                        session_id = sid
+                    console.print(f"  [green]✅ 对话已保存 (ID: {sid})[/green]\n")
                 else:
                     console.print("  [yellow]⚠️ 没有可保存的对话[/yellow]\n")
                 continue
@@ -317,27 +385,34 @@ def run_ai_chat(initial_question: Optional[str] = None):
         render_ai_message(console, "user", user_input)
         console.print()
 
-        # 添加到历史
+        # 添加到历史（滑动窗口裁剪，防止上下文无限增长）
         history.append({"role": "user", "content": user_input})
+        history = trim_history(history)
 
-        # ── 流式 AI 回复 ──
-        theme = get_theme()
-        console.print(f"  [bold {theme['ai_color']}]▸ AI: [/bold {theme['ai_color']}]", end="")
-        success, response, history = client.chat(
-            messages=history,
-            stream=True,
-            on_tool_call=on_tool_call,
-            on_text=on_text,
-        )
-        console.print()  # 流式结束换行
+        # ── AgentLoop 处理（分类→规划→执行→审核） ──
+        response = ask_ai(user_input)
+        if response:
+            history.append({"role": "assistant", "content": response})
 
-        if not success:
-            console.print(f"  [bold red]{response}[/bold red]")
-            console.print()
-
-        # 保存对话
+        # 保存对话（会话内复用同一 session_id，避免碎片化）
         if history:
-            save_conversation(history)
+            try:
+                sid = save_conversation(history, session_id=session_id)
+                if sid:
+                    session_id = sid
+            except Exception:
+                pass
+
+    # ── 退出：会话总结 + 画像抽取（记忆系统） ──
+    if history and session_id:
+        try:
+            from .memory import finalize_session, extract_and_update_profile
+
+            finalize_session(session_id, history)
+            if get_config("memory_auto_extract", True):
+                extract_and_update_profile(history)
+        except Exception:
+            pass
 
     # 记录会话统计
     try:

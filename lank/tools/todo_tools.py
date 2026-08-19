@@ -25,10 +25,17 @@ def _load_todos() -> List[Dict[str, Any]]:
 
 
 def _save_todos(todos: List[Dict[str, Any]]) -> None:
-    """保存待办事项"""
+    """保存待办事项（原子写）"""
     TODO_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(TODO_FILE, "w", encoding="utf-8") as f:
+    tmp = TODO_FILE.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(todos, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, TODO_FILE)
+
+
+def _next_todo_id(todos: List[Dict[str, Any]]) -> int:
+    """生成不冲突的待办 id（修复删除后 id 重复 bug）"""
+    return max((t.get("id", 0) for t in todos), default=0) + 1
 
 
 def todo_add(task: str, priority: str = "medium") -> str:
@@ -43,7 +50,7 @@ def todo_add(task: str, priority: str = "medium") -> str:
     """
     todos = _load_todos()
     todo = {
-        "id": len(todos) + 1,
+        "id": _next_todo_id(todos),
         "task": task,
         "priority": priority,
         "done": False,
