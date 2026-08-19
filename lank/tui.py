@@ -87,47 +87,44 @@ class ChatApp:
 
     # ═══════════════ 渲染 ═══════════════
 
-    def _logical_line_count(self) -> int:
-        """与 _render_messages 一致的逻辑行数（不含 wrap，用于滚动锚点）"""
-        lines = 0
-        for _, text in self.messages:
-            lines += text.count("\n") + 1
+    def _build_render_items(self) -> List[Tuple[str, str]]:
+        """构建消息区渲染片段（不持锁，由调用方在锁内调用）"""
+        items: List[Tuple[str, str]] = []
+        for role, text in self.messages:
+            if role == "user":
+                items.append(("class:chat.user", f"▸ 你: {text}\n\n"))
+            elif role == "assistant":
+                items.append(("class:chat.ai", f"▸ AI: {text}\n\n"))
+            elif role == "tool":
+                items.append(("class:chat.tool", f"🔧 {str(text)[:300]}\n\n"))
+            else:
+                items.append(("class:chat.sys", f"⚙ {text}\n\n"))
         if self.streaming_text:
-            lines += self.streaming_text.count("\n") + 1
+            items.append(("class:chat.ai", f"▸ AI: {self.streaming_text}"))
         elif not self.messages:
-            lines += 3  # 欢迎消息占 3 行
-        return lines
+            items.append(("class:chat.sys",
+                          "欢迎使用 LANK — 输入 /help 查看帮助\n"
+                          "输入框固定在底部，PageUp/PageDown 回看历史\n"
+                          "/history 查看历史会话 | /resume <ID> 恢复"))
+        return items
 
     def _get_cursor_position(self):
-        """滚动锚点：直接指定 cursor 所在逻辑行（可靠滚动，不依赖片段解析）"""
+        """滚动锚点：用与渲染完全相同的 split_lines 行数计算，保证永不越界"""
         from prompt_toolkit.data_structures import Point
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.formatted_text.utils import split_lines
         with self._lock:
-            total = self._logical_line_count()
-        anchor = max(0, total - 1 - self._back_lines)
+            ft = FormattedText(self._build_render_items())
+            n_lines = len(list(split_lines(ft)))
+            anchor = max(0, n_lines - 1 - self._back_lines)
+            anchor = min(anchor, max(0, n_lines - 1))  # 双保险 clamp
         return Point(x=0, y=anchor)
 
     def _render_messages(self):
         """消息区渲染（每次刷新调用）"""
         from prompt_toolkit.formatted_text import FormattedText
         with self._lock:
-            items: List[Tuple[str, str]] = []
-            for role, text in self.messages:
-                if role == "user":
-                    items.append(("class:chat.user", f"▸ 你: {text}\n\n"))
-                elif role == "assistant":
-                    items.append(("class:chat.ai", f"▸ AI: {text}\n\n"))
-                elif role == "tool":
-                    items.append(("class:chat.tool", f"🔧 {str(text)[:300]}\n\n"))
-                else:
-                    items.append(("class:chat.sys", f"⚙ {text}\n\n"))
-            if self.streaming_text:
-                items.append(("class:chat.ai", f"▸ AI: {self.streaming_text}"))
-            elif not self.messages:
-                items.append(("class:chat.sys",
-                              "欢迎使用 LANK — 输入 /help 查看帮助\n"
-                              "输入框固定在底部，PageUp/PageDown 回看历史\n"
-                              "/history 查看历史会话 | /resume <ID> 恢复"))
-        return FormattedText(items)
+            return FormattedText(self._build_render_items())
 
     def _left_prompt(self):
         """输入框左侧模式提示"""
