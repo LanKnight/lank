@@ -24,12 +24,29 @@ _tool_registry: Dict[str, Dict[str, Any]] = {}
 # 白名单文件 ~/.lank/allowlist.json
 ALLOWLIST_FILE = Path.home() / ".lank" / "allowlist.json"
 
-_TYPE_CHECKERS = {
-    "string": str,
-    "integer": int,
-    "number": (int, float),
-    "boolean": bool,
-}
+def _check_type(pname: str, ptype: str, value: Any) -> Optional[str]:
+    """类型检查（bool 不能冒充 int/number）"""
+    if value is None:
+        return None
+    if ptype == "string":
+        if not isinstance(value, str):
+            return f"参数 {pname} 类型错误: 期望 string, 实际 {type(value).__name__}"
+    elif ptype == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return f"参数 {pname} 类型错误: 期望 integer, 实际 {type(value).__name__}"
+    elif ptype == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"参数 {pname} 类型错误: 期望 number, 实际 {type(value).__name__}"
+    elif ptype == "boolean":
+        if not isinstance(value, bool):
+            return f"参数 {pname} 类型错误: 期望 boolean, 实际 {type(value).__name__}"
+    elif ptype == "array":
+        if not isinstance(value, list):
+            return f"参数 {pname} 类型错误: 期望 array, 实际 {type(value).__name__}"
+    elif ptype == "object":
+        if not isinstance(value, dict):
+            return f"参数 {pname} 类型错误: 期望 object, 实际 {type(value).__name__}"
+    return None
 
 
 def register_tool(
@@ -131,10 +148,9 @@ def _validate_arguments(info: Dict[str, Any], arguments: Dict[str, Any]) -> Opti
                 return f"缺少必填参数: {pname}"
             continue
 
-        value = arguments[pname]
-        checker = _TYPE_CHECKERS.get(ptype)
-        if checker is not None and value is not None and not isinstance(value, checker):
-            return f"参数 {pname} 类型错误: 期望 {ptype}, 实际 {type(value).__name__}"
+        err = _check_type(pname, ptype, arguments[pname])
+        if err:
+            return err
     return None
 
 
@@ -173,29 +189,39 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def needs_approval(name: str) -> bool:
-    """检查工具是否需要用户确认（考虑白名单）"""
+    """检查工具是否需要用户确认（考虑白名单，兼容旧接口）"""
+    return needs_confirmation(name, "")
+
+
+def needs_confirmation(name: str, arg_hint: str = "") -> bool:
+    """检查工具调用是否需要用户确认（白名单命中则免确认）
+
+    Args:
+        name: 工具名
+        arg_hint: 参数提示（execute_command 传命令文本，用于命令白名单匹配）
+    """
     info = get_tool(name)
     if info is None:
         return False
     approval = info.get("approval", "none")
     if approval == "none":
         return False
-    if approval == "whitelist":
-        if _is_allowlisted(name, ""):
-            return False
-        return True
+    # 任何需要确认的工具，命中白名单（工具名或命令前缀）则免确认
+    if _is_allowlisted(name, arg_hint):
+        return False
     return True
 
 
 # ── 白名单（~/.lank/allowlist.json） ──
 
 def _load_allowlist() -> Dict[str, Any]:
-    """加载白名单"""
+    """加载白名单（损坏/顶层非 dict 时返回空）"""
     if ALLOWLIST_FILE.exists():
         try:
             with open(ALLOWLIST_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, IOError, AttributeError):
             return {}
     return {}
 
@@ -212,18 +238,35 @@ def _save_allowlist(data: Dict[str, Any]) -> None:
         logger.error("保存白名单失败: %s", e)
 
 
+def _prefix_match(pattern: str, hint: str) -> bool:
+    """命令前缀匹配（词边界：放行 'git status' 不放行 'git statusx'）"""
+    import re
+    if not pattern:
+        return False
+    return re.match(r"^{}(\s|$)".format(re.escape(pattern)), hint) is not None
+
+
 def _is_allowlisted(name: str, arg_hint: str = "") -> bool:
     """判断工具调用是否命中白名单"""
     data = _load_allowlist()
-    tools = data.get("tools", [])
-    if name in tools:
-        return True
-    commands = data.get("commands", [])
     hint = arg_hint.lower()
+    # execute_command 只走命令前缀白名单——tools 列表里的同名条目不生效，
+    # 防止空 hint 时把整个命令执行放行
+    if name != "execute_command":
+        tools = data.get("tools", [])
+        if name in tools:
+            return True
+    commands = data.get("commands", [])
     for entry in commands:
         pattern = (entry.get("pattern") or "").lower()
-        if pattern and hint.startswith(pattern):
+        if _prefix_match(pattern, hint):
             return True
+    # 配置项 cmd_allowlist 同样作为命令前缀白名单生效
+    if name == "execute_command":
+        cfg_list = get_config("cmd_allowlist", []) or []
+        for pat in cfg_list:
+            if _prefix_match(str(pat).lower(), hint):
+                return True
     return False
 
 
@@ -232,18 +275,24 @@ def check_allowlist(name: str, arg_hint: str = "") -> bool:
     return _is_allowlisted(name, arg_hint)
 
 
-def allow_forever(name: str, arg_hint: str = "") -> None:
-    """将工具/命令加入永久白名单"""
-    data = _load_allowlist()
-    if name in ("execute_command",) and arg_hint:
+def allow_forever(name: str, arg_hint: str = "") -> str:
+    """将工具/命令加入永久白名单（execute_command 要求非空命令前缀）"""
+    if name == "execute_command":
+        if not arg_hint or not arg_hint.strip():
+            return "错误: 无法将空命令加入白名单"
+        data = _load_allowlist()
         commands = data.setdefault("commands", [])
         if not any(c.get("pattern", "").lower() == arg_hint.lower() for c in commands):
             commands.append({"pattern": arg_hint})
-    else:
-        tools = data.setdefault("tools", [])
-        if name not in tools:
-            tools.append(name)
+        _save_allowlist(data)
+        return f"已加入命令白名单: {arg_hint}"
+
+    data = _load_allowlist()
+    tools = data.setdefault("tools", [])
+    if name not in tools:
+        tools.append(name)
     _save_allowlist(data)
+    return f"已加入工具白名单: {name}"
 
 
 def remove_allowlist(name: str) -> None:

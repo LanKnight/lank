@@ -28,12 +28,17 @@ def submit_plan(goal: str, steps: List[Dict[str, Any]], review_criteria: str = "
     for i, s in enumerate(steps, 1):
         if not isinstance(s, dict):
             continue
+        hints = s.get("tools_hint") or []
+        if isinstance(hints, str):
+            hints = [hints]  # 字符串不拆成单字符
+        elif not isinstance(hints, list):
+            hints = []
         plan_steps.append(Step(
             id=i,
             title=str(s.get("title", "")),
             action=str(s.get("action", "")),
             acceptance=str(s.get("acceptance", "")),
-            tools_hint=[str(t) for t in (s.get("tools_hint") or [])],
+            tools_hint=[str(t) for t in hints],
         ))
 
     if not plan_steps:
@@ -92,11 +97,16 @@ def submit_review(
         return "错误: 当前没有运行中的任务"
 
     steps: List[Step] = []
+    # 多个新步骤必须分配递增且唯一的 id（_next_step_id 每次取 max+1，
+    # 多次调用会返回相同 id，导致去重时只保留第一个）
+    base = loop._next_step_id() - 1
+    assigned = 0
     for s in new_steps or []:
         if not isinstance(s, dict):
             continue
+        assigned += 1
         steps.append(Step(
-            id=loop._next_step_id(),
+            id=base + assigned,
             title=str(s.get("title", "")),
             action=str(s.get("action", "")),
             acceptance=str(s.get("acceptance", "")),

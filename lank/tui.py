@@ -58,6 +58,7 @@ class ChatApp:
         self._streamed_parts: List[str] = []
         self._pending_ask: Optional[Dict[str, Any]] = None  # 待回答的交互
         self._back_lines = 0      # 回看行数（0=底部），PageUp/PageDown 调整
+        self._ai_running = False  # 单一 AI 运行互斥（防止并发线程踩踏）
         self._lock = threading.Lock()
 
         # prompt_toolkit 组件（PT_AVAILABLE 时创建）
@@ -144,7 +145,7 @@ class ChatApp:
         """追加一条消息并刷新（自动回到最新位置）"""
         with self._lock:
             self.messages.append((role, text))
-        self._back_lines = 0
+            self._back_lines = 0
         self._invalidate()
 
     def _invalidate(self) -> None:
@@ -154,8 +155,12 @@ class ChatApp:
 
     # ═══════════════ 交互桥接（AI 线程 → UI 线程） ═══════════════
 
-    def _ask_sync(self, prompt_text: str, responder: Callable[[str], None]) -> None:
-        """投递问题给 UI，阻塞等待用户回答（AI 线程调用）"""
+    def _ask_sync(self, prompt_text: str, responder: Callable[[str], None],
+                  timeout: float = 300.0) -> None:
+        """投递问题给 UI，阻塞等待用户回答（AI 线程调用）
+
+        带超时防止永久阻塞（用户退出/异常时 300s 后放弃）。
+        """
         evt = threading.Event()
 
         def callback(answer: str) -> None:
@@ -165,15 +170,15 @@ class ChatApp:
         with self._lock:
             self._pending_ask = {"callback": callback}
         self._add_message("system", f"❓ {prompt_text}")
-        evt.wait()  # 阻塞直到 UI 线程回答
+        evt.wait(timeout)  # 阻塞直到 UI 线程回答（或超时）
 
     def confirm_sync(self, question: str) -> bool:
-        """确认交互（AI 线程调用）"""
+        """确认交互（AI 线程调用）；空输入/非确认词一律视为拒绝（安全默认）"""
         result = {"ok": False}
 
         def responder(answer: str) -> None:
             ans = answer.strip().lower()
-            result["ok"] = ans not in ("n", "no", "取消")
+            result["ok"] = ans in ("y", "yes", "是", "ok")
 
         self._ask_sync(question, responder)
         return result["ok"]
@@ -309,17 +314,27 @@ class ChatApp:
             else:
                 self._add_message("system", f"⚠️ {result.response}")
 
-            # 保存会话（会话内复用 session_id）
+            # 保存会话（会话内复用 session_id）+ 长会话增量滚动总结
             try:
-                from .memory import save_conversation
+                from .memory import save_conversation, needs_rollup, finalize_session
                 if self.ai_history:
                     sid = save_conversation(self.ai_history, session_id=self.session_id)
                     if sid:
                         self.session_id = sid
+                    if self.session_id and needs_rollup(self.ai_history):
+                        threading.Thread(
+                            target=finalize_session,
+                            args=(self.session_id, self.ai_history),
+                            daemon=True,
+                        ).start()
             except Exception:
                 pass
         except Exception as e:
             self._add_message("system", f"⚠️ AI 调用失败: {e}")
+        finally:
+            with self._lock:
+                self._ai_running = False
+            self._invalidate()
 
     # ═══════════════ 输入处理（UI 线程） ═══════════════
 
@@ -342,6 +357,13 @@ class ChatApp:
 
         if self.ai_mode and self.ai_available and self.client is not None:
             with self._lock:
+                if self._ai_running:
+                    # 上一轮 AI 任务还在执行，拒绝并发提交（防线程踩踏）
+                    self.messages.append(("system", "⚠️ 上一条任务还在执行中，请稍候（Ctrl+C 可中断）"))
+                    self._back_lines = 0
+                    self._invalidate()
+                    return
+                self._ai_running = True
                 self.ai_history.append({"role": "user", "content": text})
                 self.ai_history = trim_history(self.ai_history)
             threading.Thread(target=self._run_ai, args=(text,), daemon=True).start()
@@ -382,12 +404,15 @@ class ChatApp:
             out.append("已切换到普通聊天模式")
         elif cmd == "/auto":
             new_val = not get_config("auto_mode", False)
-            set_config("auto_mode", new_val)
-            out.append(f"自动模式已{'开启' if new_val else '关闭'}（计划自动确认、审核自动通过）")
+            if set_config("auto_mode", new_val):
+                out.append(f"自动模式已{'开启' if new_val else '关闭'}（计划自动确认、审核自动通过）")
+            else:
+                out.append("⚠️ 自动模式保存失败")
         elif cmd == "/clear":
             with self._lock:
                 self.messages = [("system", "对话已清空")]
                 self.ai_history = []
+                self.session_id = None  # 清空后开新会话，避免旧 id 覆盖写入
             self._back_lines = 0
             self._invalidate()
             return
@@ -435,10 +460,10 @@ class ChatApp:
             try:
                 from .model_config import list_available_models
                 if cmd_arg:
-                    set_config("model", cmd_arg)
+                    ok = set_config("model", cmd_arg)
                     if self.client is not None:
                         self.client.set_model(cmd_arg)
-                    out.append(f"已切换模型: {cmd_arg}")
+                    out.append(f"已切换模型: {cmd_arg}" if ok else "⚠️ 模型保存失败")
                 else:
                     current = get_config("model", "deepseek-v4-flash")
                     out.append(f"当前模型: {current}")
@@ -511,19 +536,23 @@ class ChatApp:
         def _pageup(event):
             # 向上回看 10 行
             self._back_lines = min(self._back_lines + 10, 10 ** 6)
+            self._invalidate()
 
         @kb.add("pagedown")
         def _pagedown(event):
             # 向下回到最新
             self._back_lines = max(0, self._back_lines - 10)
+            self._invalidate()
 
         @kb.add("c-home")
         def _to_top(event):
             self._back_lines = 10 ** 6
+            self._invalidate()
 
         @kb.add("c-end")
         def _to_bottom(event):
             self._back_lines = 0
+            self._invalidate()
 
         self.input_buffer = Buffer(
             multiline=False,
@@ -569,12 +598,13 @@ class ChatApp:
         )
 
     def _on_accept(self, buff: Buffer) -> None:
-        """输入框提交：优先响应待回答的交互"""
+        """输入框提交：优先响应待回答的交互（原子取走，防竞态）"""
         text = buff.text
-        if self._pending_ask is not None:
-            callback = self._pending_ask["callback"]
+        with self._lock:
+            pending = self._pending_ask
             self._pending_ask = None
-            callback(text)
+        if pending is not None:
+            pending["callback"](text)
         else:
             self._handle_input(text)
         buff.reset()
@@ -593,15 +623,21 @@ class ChatApp:
 
         self._build_pt()
 
-        # 初始问题（lank ai "..." 启动即执行）
-        if self.initial_question:
-            self._handle_input(self.initial_question)
-
+        # 全屏期间静默终端日志输出（stderr 告警会打花备用屏幕）
+        from .logs import set_console_logging
+        set_console_logging(False)
         try:
-            self.app.run()
-        except KeyboardInterrupt:
-            # 双重 Ctrl+C 硬中断也正常退出，不抛 traceback
-            pass
+            # 初始问题（lank ai "..." 启动即执行）
+            if self.initial_question:
+                self._handle_input(self.initial_question)
+
+            try:
+                self.app.run()
+            except KeyboardInterrupt:
+                # 双重 Ctrl+C 硬中断也正常退出，不抛 traceback
+                pass
+        finally:
+            set_console_logging(True)
 
         # 退出：会话总结 + 画像抽取（记忆系统）
         # 放后台线程执行（短超时），绝不阻塞退出；最多等 5 秒

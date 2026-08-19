@@ -11,19 +11,26 @@ memory/store.py - 记忆持久化层（design.md §8）
 
 import json
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..config import get_config
+from ..logs import get_logger
 from ..utils import atomic_write_json
+
+logger = get_logger("memory.store")
 
 MEMORY_DIR = Path.home() / ".lank" / "memory"
 HISTORY_DIR = MEMORY_DIR / "history"
 SUMMARIES_FILE = MEMORY_DIR / "summaries.json"
 FACTS_FILE = MEMORY_DIR / "facts.json"
 PROFILE_FILE = MEMORY_DIR / "profile.json"
+
+# 同进程线程安全（读-改-写路径加锁，防并发丢更新/撞 id）
+_store_lock = threading.Lock()
 
 
 def ensure_memory_dir() -> None:
@@ -54,8 +61,8 @@ def save_conversation(messages: List[Dict[str, Any]], session_id: Optional[str] 
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, filepath)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("保存会话失败 %s: %s", filepath, e)
     return session_id
 
 
@@ -73,19 +80,19 @@ def load_conversation(session_id: str) -> Optional[List[Dict[str, Any]]]:
 
 
 def list_sessions(days: int = 7) -> List[Dict[str, Any]]:
-    """获取最近的会话元信息列表"""
+    """获取最近的会话元信息列表（按真实时间戳排序，不依赖文件名）"""
     ensure_memory_dir()
     if not HISTORY_DIR.exists():
         return []
     cutoff = datetime.now() - timedelta(days=days)
     conversations = []
-    for f in sorted(HISTORY_DIR.glob("*.json"), reverse=True):
+    for f in HISTORY_DIR.glob("*.json"):
         try:
             with open(f, "r", encoding="utf-8") as fp:
                 data = json.load(fp)
             ts = datetime.fromisoformat(data["timestamp"])
             if ts < cutoff:
-                break
+                continue
             conversations.append({
                 "session_id": data["session_id"],
                 "timestamp": data["timestamp"],
@@ -93,6 +100,7 @@ def list_sessions(days: int = 7) -> List[Dict[str, Any]]:
             })
         except Exception:
             continue
+    conversations.sort(key=lambda c: c["timestamp"], reverse=True)
     return conversations
 
 
@@ -102,24 +110,26 @@ def _load_summaries() -> Dict[str, Any]:
     if SUMMARIES_FILE.exists():
         try:
             with open(SUMMARIES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, IOError, AttributeError):
             return {}
     return {}
 
 
 def add_summary(session_id: str, timestamp: str, summary: str,
                 keywords: Optional[List[str]] = None, messages_count: int = 0) -> None:
-    """写入会话摘要"""
-    data = _load_summaries()
-    data[session_id] = {
-        "session_id": session_id,
-        "timestamp": timestamp,
-        "summary": summary,
-        "keywords": keywords or [],
-        "messages_count": messages_count,
-    }
-    atomic_write_json(SUMMARIES_FILE, data)
+    """写入会话摘要（加锁防并发丢更新）"""
+    with _store_lock:
+        data = _load_summaries()
+        data[session_id] = {
+            "session_id": session_id,
+            "timestamp": timestamp,
+            "summary": summary,
+            "keywords": keywords or [],
+            "messages_count": messages_count,
+        }
+        atomic_write_json(SUMMARIES_FILE, data)
 
 
 def load_summaries() -> Dict[str, Any]:
@@ -133,39 +143,48 @@ def _load_facts() -> Dict[str, Any]:
     if FACTS_FILE.exists():
         try:
             with open(FACTS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, IOError, AttributeError):
             return {}
     return {}
 
 
 def _next_fact_id(facts: Dict[str, Any]) -> str:
-    n = max((int(k.split("_")[1]) for k in facts if "_" in k), default=0) + 1
-    return f"fact_{n}"
+    """生成下一个事实 id（容错：非法键跳过）"""
+    max_n = 0
+    for k in facts:
+        if "_" in k:
+            try:
+                max_n = max(max_n, int(k.split("_")[1]))
+            except (ValueError, IndexError):
+                continue
+    return f"fact_{max_n + 1}"
 
 
 def add_fact(text: str, source: str = "auto", importance: int = 1) -> str:
-    """写入事实（同文本合并，更新提及次数）"""
-    facts = _load_facts()
-    now = datetime.now().isoformat()
-    for fid, f in facts.items():
-        if f.get("text", "").strip() == text.strip():
-            f["mention_count"] = f.get("mention_count", 1) + 1
-            f["importance"] = max(f.get("importance", 1), importance)
-            f["updated_at"] = now
-            atomic_write_json(FACTS_FILE, facts)
-            return fid
-    fid = _next_fact_id(facts)
-    facts[fid] = {
-        "text": text,
-        "source": source,           # auto / explicit
-        "importance": importance,   # 1-3
-        "mention_count": 1,
-        "created_at": now,
-        "updated_at": now,
-    }
-    atomic_write_json(FACTS_FILE, facts)
-    return fid
+    """写入事实（同文本合并，更新提及次数；加锁防并发撞 id）"""
+    with _store_lock:
+        facts = _load_facts()
+        now = datetime.now().isoformat()
+        for fid, f in facts.items():
+            if isinstance(f, dict) and f.get("text", "").strip() == text.strip():
+                f["mention_count"] = f.get("mention_count", 1) + 1
+                f["importance"] = max(f.get("importance", 1), importance)
+                f["updated_at"] = now
+                atomic_write_json(FACTS_FILE, facts)
+                return fid
+        fid = _next_fact_id(facts)
+        facts[fid] = {
+            "text": text,
+            "source": source,           # auto / explicit
+            "importance": importance,   # 1-3
+            "mention_count": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
+        atomic_write_json(FACTS_FILE, facts)
+        return fid
 
 
 def remove_fact(fact_id: str) -> bool:
@@ -189,11 +208,10 @@ def aggregate_profile() -> Dict[str, Any]:
     """由 facts 聚合生成画像（profile.json 兼容格式）"""
     facts = _load_facts()
     profile: Dict[str, Any] = {}
-    for f in facts.values():
-        text = f.get("text", "")
-        key = text[:20]
-        profile[key] = {
-            "value": text,
+    for fid, f in facts.items():
+        # key 用事实 id，避免同前缀文本互相覆盖
+        profile[fid] = {
+            "value": f.get("text", ""),
             "updated_at": f.get("updated_at", "")[:10],
             "source": f.get("source", "auto"),
             "importance": f.get("importance", 1),
@@ -202,17 +220,20 @@ def aggregate_profile() -> Dict[str, Any]:
 
 
 def get_profile() -> Dict[str, Any]:
-    """获取用户画像（facts 优先，兼容旧 profile.json）"""
+    """获取用户画像（facts 聚合优先，profile.json 补缺，旧数据不隐身）"""
+    profile: Dict[str, Any] = {}
     facts = _load_facts()
     if facts:
-        return aggregate_profile()
+        profile.update(aggregate_profile())
     if PROFILE_FILE.exists():
         try:
             with open(PROFILE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                legacy = json.load(f)
+            if isinstance(legacy, dict):
+                profile.update(legacy)
         except Exception:
-            return {}
-    return {}
+            pass
+    return profile
 
 
 def get_profile_summary() -> str:

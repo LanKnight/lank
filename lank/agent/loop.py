@@ -8,7 +8,7 @@ agent/loop.py - AgentLoop 主循环（design.md §5.5）
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from ..config import get_config
+from ..config import get_config, get_int
 from ..logs import get_logger
 from .context import set_current_loop
 from .executor import Executor
@@ -98,9 +98,10 @@ class AgentLoop:
             # ── 3. 执行 + 4. 审核（可迭代） ──
             executor = Executor(self.client, self.callbacks)
             reviewer = Reviewer(self.client)
-            max_review = int(get_config("max_review_rounds", 3))
+            max_review = get_int("max_review_rounds", 3)
 
-            for _ in range(max_review + 1):
+            # 迭代 = 1 次初始执行 + 最多 max_review 次「审核未达标→补步→重跑」
+            for round_idx in range(max_review + 1):
                 executor.execute_plan(plan)
 
                 if not all(s.status == StepStatus.DONE for s in plan.steps):
@@ -125,19 +126,25 @@ class AgentLoop:
                     if auto or self.callbacks.on_review_confirm is None \
                             or self.callbacks.on_review_confirm(verdict):
                         return AgentResult(True, text, phase=AgentPhase.REVIEW, plan=plan)
-                    # 用户终审不通过 → 追加人工补充说明
-                    return AgentResult(True, text, phase=AgentPhase.REVIEW, plan=plan)
+                    # 用户终审驳回：如实标记未确认，可继续对话修改
+                    return AgentResult(
+                        False, text + "\n\n（你未确认交付，可继续提出修改要求）",
+                        phase=AgentPhase.REVIEW, plan=plan,
+                    )
 
                 # 未达标：追加新步骤，继续执行
-                if verdict.new_steps:
-                    existing_ids = {s.id for s in plan.steps}
-                    for s in verdict.new_steps:
-                        if s.id not in existing_ids:
-                            plan.steps.append(s)
-                            existing_ids.add(s.id)
-                    logger.info("审核未达标，追加 %d 个新步骤", len(verdict.new_steps))
-                    continue
-                break  # 无新步骤可做
+                if not verdict.new_steps:
+                    break  # 无新步骤可做
+                existing_ids = {s.id for s in plan.steps}
+                added = 0
+                for s in verdict.new_steps:
+                    if s.id not in existing_ids:
+                        plan.steps.append(s)
+                        existing_ids.add(s.id)
+                        added += 1
+                logger.info("审核未达标，追加 %d 个新步骤", added)
+                if round_idx >= max_review:
+                    break  # 已达补充上限，末轮追加的步骤不再重跑
 
             # ── 超限或受阻 ──
             plan.status = PlanStatus.FINISHED

@@ -14,10 +14,14 @@ STATS_FILE = Path.home() / ".lank" / "stats.json"
 
 
 def atomic_write_json(path: Path, data: Any) -> bool:
-    """原子写入 JSON 文件（临时文件 + os.replace，防止写坏）"""
+    """原子写入 JSON 文件（临时文件 + os.replace，防止写坏）
+
+    tmp 文件名带随机后缀，避免多线程并发写同一目标时互相截断。
+    """
+    import uuid
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:6]}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

@@ -9,7 +9,7 @@ agent/planner.py - PLAN 阶段（design.md §5.1-§5.2）
 
 from typing import Callable, Optional, Tuple
 
-from ..config import get_config
+from ..config import get_config, get_int
 from ..logs import get_logger
 from ..tools import get_tool_descriptions
 from .context import get_current_loop
@@ -37,7 +37,7 @@ class Planner:
             - plan 为 None 时，answer 是直接回答（简单问答，已流式输出）
             - plan 非 None 时，进入 PLAN 阶段
         """
-        max_steps = int(get_config("max_plan_steps", 10))
+        max_steps = get_int("max_plan_steps", 10)
         plan_prompt = get_plan_prompt(max_steps)
         prompt = plan_prompt + "\n\n" + get_tool_descriptions()
         if self.memory_text:

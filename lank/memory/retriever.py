@@ -43,11 +43,11 @@ def _freshness(timestamp: str, k: float = 0.1) -> float:
 
 
 def _importance(entry: Dict[str, Any]) -> float:
-    """重要性：显式记忆 > 自动抽取；提及次数加成"""
+    """重要性：显式记忆 > 自动抽取；提及次数加成（封顶，防无关记忆反超相关结果）"""
     source = entry.get("source", "auto")
     base = 3.0 if source == "explicit" else 1.0
     mentions = float(entry.get("mention_count", 1))
-    return base + (mentions - 1) * 0.5
+    return min(base + (mentions - 1) * 0.5, 5.0)
 
 
 def _weights() -> Tuple[float, float, float]:
@@ -72,6 +72,8 @@ def _score(query_tokens: set, text: str, entry: Dict[str, Any]) -> float:
 
 def search_summaries(query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
     """检索会话摘要（情景记忆）"""
+    if not query or not query.strip():
+        return []  # 空查询不返回全部记忆
     if top_k is None:
         top_k = int(get_config("memory_top_k", 5))
     query_tokens = _tokenize(query)
@@ -93,6 +95,8 @@ def search_summaries(query: str, top_k: Optional[int] = None) -> List[Dict[str, 
 
 def search_facts(query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
     """检索事实（语义记忆）"""
+    if not query or not query.strip():
+        return []  # 空查询不返回全部记忆
     if top_k is None:
         top_k = int(get_config("memory_top_k", 5))
     query_tokens = _tokenize(query)

@@ -401,8 +401,7 @@ def cli(argv: Optional[List[str]] = None) -> int:
     cmd = argv[0]
 
     if cmd == "tui":
-        run_tui()
-        return 0
+        return run_tui()
 
     elif cmd == "ai":
         initial_question = " ".join(argv[1:]) if len(argv) > 1 else None
