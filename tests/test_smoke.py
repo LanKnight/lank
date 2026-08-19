@@ -292,6 +292,63 @@ class TestChatApp(unittest.TestCase):
         t.join(3)
         self.assertFalse(result.get("ok"))
 
+    def test_complex_task_full_flow(self):
+        """复杂任务全流程：进度/工具/交付总结，且最终消息不是碎片拼接"""
+        import threading
+        import time
+        from lank.agent.types import StepStatus
+        app = self._make_app()
+        app.ai_available = True
+
+        class FakeClient:
+            def chat(self, messages, stream=True, on_tool_call=None, on_text=None):
+                from lank.agent.context import get_current_loop
+                from lank.tools.plan_tools import submit_plan, step_done
+                loop = get_current_loop()
+                if loop is not None and loop._pending_plan is None and loop.plan is None:
+                    if on_text:
+                        on_text("[plan] 我来规划。")
+                    submit_plan("复杂任务", [
+                        {"title": "步骤1", "action": "读", "acceptance": "读完"},
+                        {"title": "步骤2", "action": "写", "acceptance": "写完"},
+                    ], "整体完成")
+                    return True, "[plan] 我来规划。", None
+                for s in loop.plan.steps:
+                    if s.status == StepStatus.IN_PROGRESS:
+                        if on_tool_call:
+                            ok = on_tool_call("execute_command", {"command": "dir"})
+                            if ok:
+                                on_tool_call("execute_command", {"command": "dir"}, "目录结果")
+                        step_done(s.id, f"{s.title}完成")
+                        break
+                return True, "ok", None
+
+            def complete(self, messages, system_prompt=None, timeout=None, retry=None):
+                from lank.agent.context import get_current_loop
+                from lank.tools.plan_tools import submit_review
+                submit_review(True, "任务完成，可以交付")
+                return True, "", None
+
+        app.client = FakeClient()
+        t = threading.Thread(target=app._run_ai, args=("复杂任务",), daemon=True)
+        t.start()
+        deadline = time.time() + 5
+        while t.is_alive() and time.time() < deadline:
+            time.sleep(0.1)
+            if app._pending_ask is not None:
+                app._on_accept(type("B", (), {"text": "y", "reset": lambda s: None})())
+        t.join(5)
+
+        texts = "|".join(text for _, text in app.messages)
+        self.assertIn("⏳ [步骤 1]", texts)                 # 步骤进度
+        self.assertIn("✅ [步骤 1]", texts)                 # 步骤完成
+        self.assertIn("正在执行工具", texts)                # 工具执行中
+        self.assertIn("目录结果", texts)                    # 工具结果
+        final = [text for r, text in app.messages if r == "assistant"]
+        self.assertTrue(final)                             # 有最终消息
+        self.assertEqual(final[-1].strip(), "任务完成，可以交付")  # 交付总结
+        self.assertNotIn("[plan]", final[-1])              # 不是碎片拼接
+
 
 if __name__ == "__main__":
     unittest.main()

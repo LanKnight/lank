@@ -71,6 +71,7 @@ class AgentLoop:
                 self.client,
                 memory_text=memory_text,
                 on_text=self.callbacks.on_text,
+                on_tool_call=self.callbacks.on_tool_call,
             )
             success, answer, plan = planner.plan_or_answer(user_input)
             if not success:
