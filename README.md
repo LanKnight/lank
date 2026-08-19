@@ -104,7 +104,8 @@ lank tui
 在 TUI 中（全屏聊天界面，输入框固定底部）：
 - 输入 `/ai` 切换到 AI 智能模式（需先配置 API Key）
 - 输入 `/normal` 切换回普通聊天模式
-- 按 `PageUp` / `PageDown` 回看历史消息
+- 按 `PageUp` / `PageDown` 回看当前对话历史（`Ctrl+Home`/`Ctrl+End` 跳顶/底）
+- 输入 `/history` 查看历史会话列表，`/resume <ID>` 恢复之前的聊天记录继续对话
 - 输入 `/help` 查看所有命令
 - 输入 `/clear` 清空对话
 - 输入 `/save` 保存对话
@@ -131,7 +132,8 @@ lank ai 帮我计算 123 * 456
 
 在 AI 聊天界面中（同样为全屏界面，输入框固定底部）：
 - 输入 `/clear` 清空对话历史
-- 按 `PageUp` / `PageDown` 回看历史消息
+- 按 `PageUp` / `PageDown` 回看当前对话历史
+- 输入 `/history` 查看历史会话，`/resume <ID>` 恢复之前的聊天记录
 - 输入 `/auto` 切换自动模式（计划自动确认、审核自动通过）
 - 输入 `/help` 查看所有命令
 - 输入 `/save` 保存对话

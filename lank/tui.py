@@ -87,12 +87,27 @@ class ChatApp:
 
     # ═══════════════ 渲染 ═══════════════
 
-    def _render_messages(self):
-        """消息区渲染（每次刷新调用）
+    def _logical_line_count(self) -> int:
+        """与 _render_messages 一致的逻辑行数（不含 wrap，用于滚动锚点）"""
+        lines = 0
+        for _, text in self.messages:
+            lines += text.count("\n") + 1
+        if self.streaming_text:
+            lines += self.streaming_text.count("\n") + 1
+        elif not self.messages:
+            lines += 3  # 欢迎消息占 3 行
+        return lines
 
-        滚动机制：在「当前查看位置」插入 [SetCursorPosition] 片段，
-        prompt_toolkit 渲染时会自动滚动到该行可见（cursor 锚定法）。
-        """
+    def _get_cursor_position(self):
+        """滚动锚点：直接指定 cursor 所在逻辑行（可靠滚动，不依赖片段解析）"""
+        from prompt_toolkit.data_structures import Point
+        with self._lock:
+            total = self._logical_line_count()
+        anchor = max(0, total - 1 - self._back_lines)
+        return Point(x=0, y=anchor)
+
+    def _render_messages(self):
+        """消息区渲染（每次刷新调用）"""
         from prompt_toolkit.formatted_text import FormattedText
         with self._lock:
             items: List[Tuple[str, str]] = []
@@ -110,24 +125,9 @@ class ChatApp:
             elif not self.messages:
                 items.append(("class:chat.sys",
                               "欢迎使用 LANK — 输入 /help 查看帮助\n"
-                              "输入框固定在底部，PageUp/PageDown 回看历史"))
-
-            # 计算逻辑总行数，并在锚点行插入 cursor 标记
-            total_lines = sum(text.count("\n") for _, text in items) + len(items)
-            anchor = max(0, total_lines - 1 - self._back_lines)
-
-            cursor_inserted = False
-            rendered: List[Tuple[str, str]] = []
-            line_no = 0
-            for style, text in items:
-                if not cursor_inserted and line_no >= anchor:
-                    rendered.append(("[SetCursorPosition]", ""))
-                    cursor_inserted = True
-                rendered.append((style, text))
-                line_no += text.count("\n") + 1
-            if not cursor_inserted:
-                rendered.append(("[SetCursorPosition]", ""))
-        return FormattedText(rendered)
+                              "输入框固定在底部，PageUp/PageDown 回看历史\n"
+                              "/history 查看历史会话 | /resume <ID> 恢复"))
+        return FormattedText(items)
 
     def _left_prompt(self):
         """输入框左侧模式提示"""
@@ -416,6 +416,43 @@ class ChatApp:
             self._back_lines = 0
             self._invalidate()
             return
+        elif cmd == "/history":
+            try:
+                from .memory import list_sessions, load_summaries
+                sessions = list_sessions(7)
+                if not sessions:
+                    out.append("暂无历史会话")
+                else:
+                    summaries = load_summaries()
+                    out.append(f"最近会话（共 {len(sessions)} 个，/resume <ID> 恢复）:")
+                    for s in sessions[:10]:
+                        sid = s["session_id"]
+                        summ = summaries.get(sid, {}).get("summary", "")[:45]
+                        out.append(f"  {sid}  [{s['message_count']}条] {summ}")
+            except Exception:
+                out.append("无法读取历史")
+        elif cmd == "/resume":
+            try:
+                from .memory import load_conversation
+                sid = cmd_arg.strip()
+                msgs = load_conversation(sid) if sid else None
+                if not msgs:
+                    out.append("未找到会话，用 /history 查看列表")
+                else:
+                    with self._lock:
+                        self.messages = [
+                            (m.get("role", ""), str(m.get("content", "")))
+                            for m in msgs
+                            if m.get("role") in ("user", "assistant", "system", "tool")
+                        ]
+                        self.ai_history = [
+                            dict(m) for m in msgs if m.get("role") in ("user", "assistant")
+                        ]
+                        self.session_id = sid
+                    self._back_lines = 0
+                    out.append(f"已恢复会话 {sid}（{len(msgs)} 条消息），可继续对话")
+            except Exception:
+                out.append("恢复失败")
         elif cmd == "/help":
             out.append("""可用命令:
   /ai       切换到 AI 智能模式
@@ -423,6 +460,8 @@ class ChatApp:
   /auto     切换自动模式（计划自动确认、审核自动通过）
   /clear    清空对话
   /save     保存对话
+  /history  查看历史会话
+  /resume   <ID> 恢复历史会话（回滚到之前的聊天记录）
   /export   [json] 导出对话
   /stats    使用统计
   /theme    [名称] 切换主题
@@ -430,7 +469,8 @@ class ChatApp:
   /todo     list|add 任务|done 编号|del 编号
   /update   检查更新
   exit      退出程序
-  PageUp/PageDown  回看历史消息""")
+  PageUp/PageDown  回看历史消息
+  Ctrl+Home/Ctrl+End 跳顶部/底部""")
         elif cmd == "/save":
             from .memory import save_conversation
             if self.ai_history:
@@ -561,7 +601,10 @@ class ChatApp:
         )
 
         self.message_window = Window(
-            content=FormattedTextControl(self._render_messages),
+            content=FormattedTextControl(
+                self._render_messages,
+                get_cursor_position=self._get_cursor_position,  # 直接锚定滚动位置
+            ),
             wrap_lines=True,
             always_hide_cursor=True,
         )
