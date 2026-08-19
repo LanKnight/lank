@@ -255,10 +255,18 @@ class AIClient:
 
     # ── 底层 API 调用 ──
 
-    def _create_completion(self, messages: List[Dict[str, Any]], *, stream: bool):
-        """统一的 API 调用入口（带 429/5xx 指数退避重试）"""
+    def _create_completion(self, messages: List[Dict[str, Any]], *, stream: bool,
+                           timeout: Optional[float] = None, retry: Optional[int] = None):
+        """统一的 API 调用入口（带 429/5xx 指数退避重试）
+
+        Args:
+            messages: 消息列表
+            stream: 是否流式
+            timeout: 单次请求超时（秒），None 用客户端默认
+            retry: 重试次数覆盖，None 用配置 api_max_retries
+        """
         tools = get_all_tools()
-        retries = int(get_config("api_max_retries", 2))
+        retries = retry if retry is not None else int(get_config("api_max_retries", 2))
         delay = 1.0
         for attempt in range(retries + 1):
             try:
@@ -269,6 +277,7 @@ class AIClient:
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                     stream=stream,
+                    timeout=timeout,
                 )
             except _RETRYABLE_ERRORS as e:
                 if attempt >= retries:
@@ -485,6 +494,8 @@ class AIClient:
         self,
         messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
+        timeout: Optional[float] = None,
+        retry: Optional[int] = None,
     ) -> Tuple[bool, str, List[Dict[str, Any]]]:
         """单轮非流式补全（供 Agent 框架使用，不执行工具循环）
 
@@ -494,6 +505,8 @@ class AIClient:
         Args:
             messages: 对话消息（不含 system message）
             system_prompt: 自定义系统提示词（默认用内置构建）
+            timeout: 单次请求超时（秒），None 用客户端默认
+            retry: 重试次数覆盖，None 用配置 api_max_retries
 
         Returns:
             (success, content, 完整消息列表)
@@ -507,7 +520,10 @@ class AIClient:
             "content": system_prompt or self._build_system_prompt(),
         }
         try:
-            response = self._create_completion([system_msg] + messages, stream=False)
+            response = self._create_completion(
+                [system_msg] + messages, stream=False,
+                timeout=timeout, retry=retry,
+            )
             assistant_msg = response.choices[0].message
             content = assistant_msg.content or ""
             entry: Dict[str, Any] = {"role": "assistant", "content": content}
