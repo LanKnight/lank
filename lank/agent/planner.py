@@ -22,10 +22,12 @@ logger = get_logger("agent.planner")
 class Planner:
     """任务规划器：一次调用完成分类 + 规划（流式）"""
 
-    def __init__(self, client, memory_text: str = "", on_text: Optional[Callable] = None):
+    def __init__(self, client, memory_text: str = "", on_text: Optional[Callable] = None,
+                 on_tool_call: Optional[Callable] = None):
         self.client = client
         self.memory_text = memory_text
         self.on_text = on_text
+        self.on_tool_call = on_tool_call
 
     def plan_or_answer(self, user_input: str) -> Tuple[bool, str, Optional[Plan]]:
         """分类 + 规划
@@ -46,7 +48,7 @@ class Planner:
             success, content, _ = self.client.chat(
                 messages=messages,
                 stream=True,
-                on_tool_call=None,   # plan 工具均无需确认
+                on_tool_call=self.on_tool_call,  # 规划阶段危险工具同样走确认
                 on_text=self.on_text,
             )
         except Exception as e:

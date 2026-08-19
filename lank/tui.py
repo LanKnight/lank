@@ -218,8 +218,12 @@ class ChatApp:
                         allow_forever(name, hint)
                     except Exception:
                         pass
+                    self._add_message("system", f"🔧 正在执行工具: {name}")
                     return True
-                return v not in ("n", "no")
+                if v in ("n", "no"):
+                    return False
+                self._add_message("system", f"🔧 正在执行工具: {name}")
+                return True
             else:
                 with self._lock:
                     self.tool_count += 1
@@ -246,6 +250,21 @@ class ChatApp:
         def on_ask_user(question, options):
             return self.ask_user_sync(question, options)
 
+        def on_step_progress(step, phase):
+            from .agent.types import StepStatus
+            if phase == "start":
+                # 步骤开始：清空流式残留，显示进度
+                with self._lock:
+                    self.streaming_text = ""
+                    self._streamed_parts = []
+                self._add_message("system", f"⏳ [步骤 {step.id}] {step.title} ...")
+            else:
+                if step.status == StepStatus.DONE:
+                    self._add_message("system", f"✅ [步骤 {step.id}] {step.title} 完成")
+                elif step.status == StepStatus.BLOCKED:
+                    self._add_message("system",
+                                      f"⛔ [步骤 {step.id}] {step.title} 受阻: {step.summary[:80]}")
+
         return AgentCallbacks(
             on_text=on_text,
             on_tool_call=on_tool_call,
@@ -253,6 +272,7 @@ class ChatApp:
             on_plan_confirm=on_plan_confirm,
             on_review=on_review,
             on_ask_user=on_ask_user,
+            on_step_progress=on_step_progress,
         )
 
     def _run_ai(self, user_input: str) -> None:
@@ -274,13 +294,18 @@ class ChatApp:
             result = loop.run(user_input, memory_text=memory_text)
 
             with self._lock:
-                full = "".join(self._streamed_parts) or result.response
-                if result.success:
-                    self.ai_history.append({"role": "assistant",
-                                            "content": result.response or full})
+                if result.plan is None:
+                    # 简单问答：用流式拼接的完整回答
+                    full = "".join(self._streamed_parts) or result.response
+                else:
+                    # 复杂任务：用审核后的交付总结（不拼接执行过程碎片）
+                    full = result.response or "（任务执行完成）"
                 self.streaming_text = ""
+
             if result.success:
-                self._add_message("assistant", full or result.response)
+                self._add_message("assistant", full)
+                with self._lock:
+                    self.ai_history.append({"role": "assistant", "content": full})
             else:
                 self._add_message("system", f"⚠️ {result.response}")
 
