@@ -18,7 +18,6 @@
 - [ ] 上下文压缩 tool，分情况策略（M7）
 - [ ] 向量检索（fastembed，DeepSeek 无 embedding API，预留接口）（M7）
 - [ ] 程序性记忆（用户习惯/工作流模式）（M7）
-- [ ] 输入框固定底部优化（TUI 布局微调）
 
 ## 已修复（v0.3.0）
 
@@ -26,6 +25,8 @@
 - [x] 调用工具的安全：命令执行危险命令黑名单 + 输出截断 + 白名单（allowlist.json）+ 参数化执行（非 Windows）
 - [x] todo id 删除后重复、calculate 幂运算 DoS、会话文件秒级冲突、版本号硬编码
 - [x] 配置读取缓存、JSON 原子写、日志系统、API 429/5xx 退避重试、工具参数校验
+- [x] **输入框固定底部**：`lank tui` / `lank ai` 重写为 prompt_toolkit 全屏聊天界面，
+      输入框钉在屏幕最底部、消息内容向上滚动堆积，`PageUp`/`PageDown` 回看历史，不再清屏闪烁
 
 ## 后续计划
 

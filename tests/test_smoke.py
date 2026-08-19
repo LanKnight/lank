@@ -11,6 +11,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+try:
+    from prompt_toolkit.output import DummyOutput
+except ImportError:
+    DummyOutput = None  # type: ignore
+
 
 class TestConfig(unittest.TestCase):
     def test_defaults(self):
@@ -210,6 +215,65 @@ class TestMemory(unittest.TestCase):
         self.assertEqual(n, 0)  # 无原始会话文件
         from lank.memory.store import load_summaries
         self.assertNotIn("old", load_summaries())
+
+
+class TestChatApp(unittest.TestCase):
+    """全屏聊天界面纯逻辑测试（不启动真实终端）"""
+
+    def _make_app(self):
+        from lank.tui import ChatApp
+        app = ChatApp(ai_only=False)
+        app._build_pt(output=DummyOutput())
+        return app
+
+    def test_command_handling(self):
+        app = self._make_app()
+        app._handle_command("/help")
+        app._handle_command("/normal")
+        app._handle_command("/unknownxx")
+        texts = " ".join(t for _, t in app.messages)
+        self.assertIn("可用命令", texts)
+        self.assertIn("未知命令", texts)
+
+    def test_scroll_to_bottom(self):
+        app = self._make_app()
+        app._invalidate()
+        self.assertGreater(app.message_window.vertical_scroll, 0)
+
+    def test_ask_bridge(self):
+        """AI 线程提问 ↔ UI 线程回答 桥接"""
+        import threading
+        app = self._make_app()
+        result = {}
+
+        def ask_thread():
+            result["ans"] = app.ask_user_sync("测试问题")
+
+        t = threading.Thread(target=ask_thread)
+        t.start()
+        import time
+        time.sleep(0.3)
+        self.assertIsNotNone(app._pending_ask)
+        app._on_accept(type("B", (), {"text": "回答A", "reset": lambda s: None})())
+        t.join(3)
+        self.assertEqual(result.get("ans"), "回答A")
+        self.assertIsNone(app._pending_ask)
+
+    def test_confirm_bridge(self):
+        import threading
+        app = self._make_app()
+        result = {}
+
+        def c_thread():
+            result["ok"] = app.confirm_sync("是否允许?")
+
+        t = threading.Thread(target=c_thread)
+        t.start()
+        import time
+        time.sleep(0.3)
+        app._on_accept(type("B", (), {"text": "n", "reset": lambda s: None})())
+        t.join(3)
+        self.assertFalse(result.get("ok"))
 
 
 if __name__ == "__main__":
