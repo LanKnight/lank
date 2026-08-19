@@ -71,14 +71,23 @@ def ensure_config_dir() -> None:
 
 # 进程级配置缓存：避免高频 get_config 反复读盘（优化清单 #6）
 _config_cache: Optional[Dict[str, Any]] = None
+_config_mtime: Optional[float] = None   # 缓存对应的文件 mtime（外部修改检测）
 # 被环境变量覆盖的键（保存配置时剥离，保持 env > 文件的优先级语义）
 _env_overrides: set = set()
 
 
 def _invalidate_cache() -> None:
     """使配置缓存失效"""
-    global _config_cache
+    global _config_cache, _config_mtime
     _config_cache = None
+    _config_mtime = None
+
+
+def _current_mtime() -> Optional[float]:
+    try:
+        return CONFIG_FILE.stat().st_mtime if CONFIG_FILE.exists() else None
+    except OSError:
+        return None
 
 
 def load_config() -> Dict[str, Any]:
@@ -91,10 +100,13 @@ def load_config() -> Dict[str, Any]:
 
     带进程级缓存，set_config/save_config 后自动失效。
     """
-    global _config_cache
+    global _config_cache, _config_mtime
     cached = _config_cache  # 原子读引用，避免判空与复制之间被置 None 的竞态
     if cached is not None:
-        return dict(cached)
+        # 外部修改检测：文件 mtime 变化则强制重载
+        if _current_mtime() == _config_mtime:
+            return dict(cached)
+        _config_cache = None  # 外部改过，重载
 
     ensure_config_dir()
     if CONFIG_FILE.exists():
@@ -130,6 +142,7 @@ def load_config() -> Dict[str, Any]:
 
     global _env_overrides
     _env_overrides = env_overrides
+    _config_mtime = _current_mtime()
     _config_cache = merged
     return dict(merged)
 
