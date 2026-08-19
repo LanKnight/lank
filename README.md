@@ -16,20 +16,29 @@
 | `lank ai` | 启动 AI 聊天界面（支持工具调用，可带初始问题） |
 | `lank set` | 交互式配置向导 |
 
-### 🤖 AI 智能助手（`lank ai`）
+### 🤖 AI 智能助手（`lank ai`，v0.3.0 起接入 ReAct 框架）
 - 调用 DeepSeek API 进行智能对话
-- **工具调用能力**（类似 Claude）：
+- **🧭 ReAct 三阶段框架**（`lank/agent/`）：
+  - **分类**：简单问答直接回答；复杂业务自动进入规划
+  - **PLAN 规划**：任务自动拆解为带验收标准的步骤计划，执行前展示给你确认（`/auto` 可全自动）
+  - **ACT 执行**：按计划逐步执行，每步独立上下文 + 步骤验收（防上下文爆炸）
+  - **REVIEW 审核**：对照验收标准逐条审核，未达标自动补充步骤重跑
+- **工具调用能力**（23 个工具）：
   - 📁 **文件操作**：读取、写入、搜索、替换文件内容
-  - 💻 **命令执行**：运行终端命令并获取输出
+  - 💻 **命令执行**：运行终端命令并获取输出（安全升级：危险命令黑名单 + 输出截断 + 白名单）
   - 🔍 **代码分析**：查看项目结构、搜索代码定义
   - 📅 **系统信息**：日期时间、系统信息查询、数学计算
   - 📝 **待办管理**：添加、查看、完成、删除待办事项
-- 带 Rich 渲染的聊天界面，支持思考动画、工具调用确认
+  - 🧭 **规划工具**：提交计划、登记步骤完成、向用户提问
+  - 🧠 **记忆工具**：`memory_search` / `memory_recall` / `memory_remember` / `memory_forget`
+- 带 Rich 渲染的聊天界面，支持流式输出、工具调用确认（可永久放行白名单）
 
-### 🧠 个性化记忆
-- 自动保存对话历史
-- 跨会话记忆恢复
-- 用户偏好学习（用户画像）
+### 🧠 个性化记忆系统（`lank/memory/`）
+- 自动保存对话历史 + 跨会话记忆恢复
+- **四层记忆架构**：工作记忆（任务内）/ 情景记忆（会话摘要）/ 语义记忆（事实与偏好）/ 程序性记忆（规划中）
+- **会话滚动摘要**：会话结束自动总结；长会话按 token 阈值增量压缩
+- **自动画像抽取**：从对话中自动学习你的偏好与事实（`memory_auto_extract`），也可显式 `memory_remember`
+- **关键词加权检索**：按 相关性×新鲜度×重要性 注入相关记忆（「提前的加载」）
 
 ### 🎨 简洁的 TUI 界面（`lank tui`）
 - 消息直接堆叠，极简角色标记
@@ -101,6 +110,7 @@ lank tui
 - 输入 `/theme [名称]` 显示或切换主题
 - 输入 `/model [名称]` 显示或切换 AI 模型
 - 输入 `/todo list|add|done|del` 管理待办
+- 输入 `/auto` 切换自动模式（计划自动确认、审核自动通过）
 - 输入 `/update` 检查更新
 - 输入 `exit` 退出
 
@@ -118,6 +128,7 @@ lank ai 帮我计算 123 * 456
 
 在 AI 聊天界面中：
 - 输入 `/clear` 清空对话历史
+- 输入 `/auto` 切换自动模式（计划自动确认、审核自动通过）
 - 输入 `/help` 查看所有命令
 - 输入 `/save` 保存对话
 - 输入 `/stats` 查看使用统计
@@ -127,6 +138,10 @@ lank ai 帮我计算 123 * 456
 - 输入 `/todo list|add|done|del` 管理待办
 - 输入 `/update` 检查更新
 - 输入 `exit` 退出
+
+> 💡 **复杂任务流程**：输入一个复杂需求（如"帮我搭一个 Python 项目脚手架"），
+> AI 会先展示执行计划（步骤 + 验收标准），确认后逐步执行，最后自动审核交付；
+> 审核不达标会自动补充步骤重跑。`/auto` 开启后全程无需确认。
 
 ### 配置管理
 
@@ -165,7 +180,21 @@ lank set reset
 | `safe_mode` | 安全模式（危险操作前确认） | `true` |
 | `working_dir` | 工作目录 | 当前目录 |
 | `memory_enabled` | 记忆功能 | `true` |
-| `max_history` | 最大历史记录数 | `100` |
+| `max_history` | 最大历史记录数（会话滑动窗口） | `100` |
+| `auto_mode` | 自动模式（计划自动确认、审核自动通过） | `false` |
+| `max_plan_steps` | 单计划最大步骤数 | `10` |
+| `max_review_rounds` | 审核未达标最大迭代轮数 | `3` |
+| `plan_prompt` / `exec_prompt` / `review_prompt` | 覆盖各阶段系统提示词 | - |
+| `tool_output_limit` | 工具结果截断字符数 | `8192` |
+| `cmd_output_limit` | 命令输出截断字符数 | `20480` |
+| `cmd_timeout` | 命令执行超时（秒） | `60` |
+| `cmd_allowlist` | 命令白名单（可自动执行） | `[]` |
+| `api_max_retries` | API 429/5xx 退避重试次数 | `2` |
+| `memory_summary_max_chars` | 会话摘要长度上限 | `2000` |
+| `memory_long_session_threshold` | 长会话增量总结 token 阈值 | `20000` |
+| `memory_top_k` | 记忆检索注入条数 | `5` |
+| `memory_max_facts` | 语义记忆容量上限 | `200` |
+| `memory_auto_extract` | 会话后自动抽取画像 | `true` |
 
 ---
 
@@ -210,18 +239,37 @@ lank/
 ├── lank/
 │   ├── __init__.py          # 包初始化（版本号）
 │   ├── __main__.py          # 主入口
-│   ├── cli.py               # CLI 命令处理 + AI 聊天界面
-│   ├── config.py            # 配置管理（lank set）
+│   ├── cli.py               # CLI 命令处理 + AI 聊天界面（ReAct 接入）
+│   ├── config.py            # 配置管理（lank set，带缓存）
 │   ├── tui.py               # TUI 聊天界面
-│   ├── ai_client.py         # AI 客户端（DeepSeek API + 工具调用）
-│   ├── memory.py            # 个性化记忆模块
-│   ├── utils.py             # 工具函数（主题/统计/导出/更新检查）
-│   └── tools/               # 工具模块
-│       ├── __init__.py      # 工具注册与调度
+│   ├── ai_client.py         # AI 客户端（DeepSeek API + 工具循环 + 重试）
+│   ├── logs.py              # 日志系统（~/.lank/logs/）
+│   ├── utils.py             # 工具函数（主题/统计/导出/原子写）
+│   ├── agent/               # ★ ReAct 框架层
+│   │   ├── types.py         # 数据模型（Plan/Step/ReviewVerdict）
+│   │   ├── prompts.py       # PLAN/EXEC/REVIEW 三段提示词
+│   │   ├── planner.py       # 分类 + 规划
+│   │   ├── executor.py      # 按步骤执行（每步紧凑上下文）
+│   │   ├── reviewer.py      # 验收审核
+│   │   ├── loop.py          # AgentLoop 状态机
+│   │   └── context.py       # 工具与循环的通信上下文
+│   ├── memory/              # ★ 记忆子系统（原 memory.py 升级）
+│   │   ├── __init__.py      # 对外 API（兼容旧调用）
+│   │   ├── store.py         # 持久化（会话/摘要/事实/画像）
+│   │   ├── summarizer.py    # 会话总结器（结束总结 + 长会话增量）
+│   │   ├── extractor.py     # 画像抽取器
+│   │   ├── retriever.py     # 关键词加权检索器
+│   │   └── forget.py        # 遗忘清理
+│   └── tools/               # 工具模块（23 个工具）
+│       ├── __init__.py      # 工具注册/调度/校验/截断/白名单
 │       ├── file_ops.py      # 文件操作（6 个工具）
-│       ├── cmd_exec.py      # 命令执行（1 个工具）
+│       ├── cmd_exec.py      # 命令执行（安全版：黑名单/截断）
 │       ├── system.py        # 系统工具（3 个工具）
-│       └── todo_tools.py    # 待办管理（4 个工具）
+│       ├── todo_tools.py    # 待办管理（4 个工具）
+│       ├── plan_tools.py    # ★ 规划工具（submit_plan/step_done/ask_user 等）
+│       └── memory_tools.py  # ★ 记忆工具（memory_search/remember 等）
+├── docs/
+│   └── design.md            # ★ ReAct 框架 + 记忆系统设计文档
 ├── README.md
 ├── pyproject.toml
 ├── requirements.txt
@@ -243,32 +291,44 @@ lank/
 └──────────────────────┬──────────────────────────┘
                        │
 ┌──────────────────────┴──────────────────────────┐
+│                 Agent 框架层 (agent/)             │
+│   ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
+│   │ Planner  │  │ Executor │  │  Reviewer    │  │
+│   │(分类+规划)│  │(逐步执行) │  │ (验收审核)   │  │
+│   └────┬─────┘  └────┬─────┘  └──────┬───────┘  │
+│        └─────────────┴───────────────┘          │
+│              AgentLoop (状态机)                  │
+└──────────────────────┬──────────────────────────┘
+                       │
+┌──────────────────────┴──────────────────────────┐
 │                   核心业务层                       │
-│  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │ AIClient │  │  Memory  │  │    Config      │  │
-│  │ (API调用)│  │  (记忆)  │  │ (~/.lank/)     │  │
-│  └────┬─────┘  └──────────┘  └───────┬───────┘  │
-│       │                              │          │
-│  ┌────┴──────────────────────────────┴───────┐  │
+│  ┌──────────┐  ┌──────────────┐  ┌───────────┐  │
+│  │ AIClient │  │ Memory (包)  │  │  Config   │  │
+│  │(API+重试) │  │ 四层记忆     │  │(~/.lank/) │  │
+│  └────┬─────┘  └──────┬───────┘  └─────┬─────┘  │
+│  ┌────┴────────────────┴───────────────┴─────┐  │
 │  │         model_config (模型参数)            │  │
 │  └───────────────────────────────────────────┘  │
 │  ┌──────────┐  ┌──────────────────────────────┐  │
 │  │   TUI    │  │           utils              │  │
-│  │ (聊天UI) │  │ (主题/统计/导出/更新检查)     │  │
+│  │ (聊天UI) │  │ (主题/统计/导出/原子写)       │  │
 │  └──────────┘  └──────────────────────────────┘  │
 └──────────────────────┬──────────────────────────┘
                        │
 ┌──────────────────────┴──────────────────────────┐
 │                  工具系统 (Tools)                 │
 │  ┌──────────────────────────────────────────┐   │
-│  │         tools/__init__.py                 │   │
-│  │   注册表 _tool_registry: Dict[str,Tool]   │   │
-│  │   register / execute / get_all / needs_   │   │
+│  │        tools/__init__.py (v2)            │   │
+│  │   注册表 + 校验 + 截断 + 白名单            │   │
+│  │   category / danger_level / approval     │   │
 │  └──────────────────────────────────────────┘   │
-│  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌───────┐  │
-│  │file_ops  │ │cmd_exec  │ │system│ │ todo  │  │
-│  │ 6 tools  │ │ 1 tool   │ │  3   │ │   4   │  │
-│  └──────────┘ └──────────┘ └──────┘ └───────┘  │
+│  ┌───────┐┌───────┐┌──────┐┌──────┐┌────────┐  │
+│  │file_ops│cmd_exec│system│ todo │plan_tools│  │
+│  │  6    │ 1(安全) │  3   │  4   │   5     │  │
+│  └───────┘└───────┘└──────┘└──────┘└────────┘  │
+│  ┌──────────────┐                               │
+│  │ memory_tools │ 4 个记忆工具                   │
+│  └──────────────┘                               │
 └──────────────────────┬──────────────────────────┘
                        │
 ┌──────────────────────┴──────────────────────────┐
@@ -276,61 +336,39 @@ lank/
 │  DeepSeek API  │  ~/.lank/config.json           │
 │  OpenAI SDK    │  ~/.lank/memory/               │
 │  Rich / prompt_toolkit  │  ~/.lank/todos.json   │
+│  ~/.lank/logs/ │  ~/.lank/allowlist.json        │
 └─────────────────────────────────────────────────┘
 ```
 
-### 一次 AI 对话的完整路径
+### 一次 AI 对话的完整路径（ReAct）
 
-以 `lank ai "帮我读 README"` 为例，追踪请求从 CLI 到 API 再回到用户的全过程：
+以 `lank ai "帮我搭建一个 Python 项目脚手架"` 为例：
 
 ```
-用户输入 "lank ai 帮我读README"
+用户输入（复杂业务）
   │
-  ├─ __main__.py:main()
-  │    └─ cli.py:cli(["ai", "帮我读README"])
-  │
-  ├─ cli.py:run_ai_chat("帮我读README")
-  │    ├─ load_config()           ← 检查 api_key 是否配置
-  │    ├─ AIClient.__init__()     ← 加载配置、验证、初始化 OpenAI 客户端
-  │    │    ├─ get_config()       ← 读取 api_key / api_base / model
-  │    │    ├─ _looks_like_api_key()  ← 防止 api_key 填到 api_base
-  │    │    └─ OpenAI(api_key, base_url, timeout, max_retries)
+  ├─ cli.py:run_ai_chat → AgentLoop.run(input, memory_text)
+  │    ├─ get_relevant_context(input)   ← 「提前的加载」：检索相关记忆
   │    │
-  │    └─ client.chat(messages, stream=True, on_tool_call, on_text)
-  │         │
-  │         ├─ _build_system_prompt()
-  │         │    ├─ get_config("system_prompt")     ← 读用户自定义提示词
-  │         │    ├─ get_tool_descriptions()         ← 生成工具说明文本
-  │         │    └─ build_system_prompt()           ← 组装最终 system prompt
-  │         │
-  │         ├─ _create_completion(messages, stream=True)
-  │         │    └─ OpenAI.chat.completions.create(
-  │         │         model, messages,
-  │         │         tools=get_all_tools(),   ← 14 个注册工具→OpenAI schema
-  │         │         temperature, max_tokens, stream=True
-  │         │       )
-  │         │
-  │         ├─ _accumulate_stream(stream, on_text)
-  │         │    ├─ for chunk in stream:
-  │         │    │    ├─ delta.content → on_text(delta)  ← 实时打字效果
-  │         │    │    └─ delta.tool_calls → 按 index 拼接片段
-  │         │    └─ return (完整文本, tool_calls列表)
-  │         │
-  │         ├─ [如果 AI 要调用工具]
-  │         │    ├─ for each tool_call:
-  │         │    │    ├─ needs_approval(name) → on_tool_call() ← 用户确认
-  │         │    │    └─ execute_tool(name, args)
-  │         │    │         └─ tools/__init__.py → tool func(**args)
-  │         │    │
-  │         │    └─ _run_tool_loop()      ← 非流式多轮循环
-  │         │         ├─ assistant(tool_calls) msg ← 必须先于 tool results!
-  │         │         ├─ tool results msg
-  │         │         ├─ _create_completion(stream=False)
-  │         │         └─ 重复直到无工具调用 or 达到 MAX_TOOL_CALL_ROUNDS
-  │         │
-  │         └─ return (success, final_response, updated_messages)
+  │    ├─ [1] Planner.plan_or_answer()  ← 一次流式请求
+  │    │     ├─ PLAN_PROMPT + 记忆 + 工具描述
+  │    │     ├─ 简单问答 → 直接流式回答（不进框架）
+  │    │     └─ 复杂任务 → 模型调用 submit_plan → Plan（步骤+验收标准）
+  │    │
+  │    ├─ [2] 计划确认（on_plan_render + on_plan_confirm）
+  │    │     └─ 用户确认 / /auto 自动通过
+  │    │
+  │    ├─ [3] Executor.execute_plan()   ← 每步独立紧凑上下文
+  │    │     ├─ EXEC_PROMPT（目标+当前步+前步摘要）
+  │    │     ├─ 工具循环（确认/白名单）→ 步骤完成调 step_done
+  │    │     └─ 步骤结果摘要 → 下一步
+  │    │
+  │    └─ [4] Reviewer.review()  ← 可迭代
+  │          ├─ REVIEW_PROMPT（对照验收标准逐条核对）
+  │          ├─ 可交付 → 总结交付（用户终审）
+  │          └─ 未达标 → 追加 new_steps → 回到 [3]（最多 N 轮）
   │
-  └─ save_conversation(history)   ← memory 模块持久化到 ~/.lank/memory/
+  └─ 退出：finalize_session（会话摘要）+ extract_and_update_profile（画像抽取）
 ```
 
 ### 模块依赖关系
@@ -340,19 +378,20 @@ __main__ ──→ cli ──→ config ──→ model_config
             │  │
             │  ├──→ tui ──→ config, memory
             │  │
-            │  ├──(lazy)──→ ai_client ──→ config, model_config, tools
+            │  ├──(lazy)──→ agent ──→ planner/executor/reviewer/loop
+            │  │              │
+            │  │              └──→ ai_client ──→ config, model_config, tools
             │  │
-            │  └──→ memory ──→ config
-            │
-            └──(lazy)──→ utils ──→ config
+            │  ├──→ memory ──→ config, utils(原子写)
+            │  │
+            │  └──(lazy)──→ utils ──→ config
 
-tools/__init__ ──→ tools/file_ops ──→ tools/__init__ (register_tool)
-               ├─→ tools/cmd_exec ──→ tools/__init__
-               ├─→ tools/system ────→ tools/__init__
-               └─→ tools/todo_tools → tools/__init__
+tools/__init__ ──→ file_ops / cmd_exec / system / todo_tools
+               ├─→ plan_tools ──→ agent.context（与运行中的 AgentLoop 通信）
+               └─→ memory_tools ──→ memory（检索/写入）
 ```
 
-> **注意:** `ai_client` 和 `utils` 使用懒加载（try/except ImportError），确保在未安装 `openai` 时 `lank tui` 仍可正常运行。工具模块与 `tools/__init__.py` 之间存在有意的循环导入——子模块导入 `register_tool`，而 `__init__.py` 在底部导入子模块以触发工具注册。
+> **注意:** `ai_client` 和 `utils` 使用懒加载（try/except ImportError），确保在未安装 `openai` 时 `lank tui` 仍可正常运行。工具模块与 `tools/__init__.py` 之间存在有意的循环导入——子模块导入 `register_tool`，而 `__init__.py` 在底部导入子模块以触发工具注册。`plan_tools`/`memory_tools` 通过 `agent.context` 与运行中的 `AgentLoop` 通信，避免直接循环依赖。
 
 ---
 
@@ -365,15 +404,15 @@ tools/__init__ ──→ tools/file_ops ──→ tools/__init__ (register_tool)
 | 顺序 | 文件 | 关注点 | 预计 |
 |:----:|------|--------|:----:|
 | 1 | `lank/__init__.py` → `__main__.py` | 项目入口，了解启动方式 | 1 min |
-| 2 | `lank/cli.py` | CLI 命令路由 + AI 聊天主循环，理解命令分发和对话流程 | 10 min |
+| 2 | `lank/cli.py` | CLI 命令路由 + AI 聊天主循环（ReAct 接入点） | 10 min |
 | 3 | `lank/model_config.py` | 模型定义、参数、提示词组装，纯配置+工具函数，无外部依赖 | 3 min |
-| 4 | `lank/config.py` | 配置持久化、环境变量覆盖、交互式配置向导 | 5 min |
-| 5 | `lank/tools/__init__.py` | **工具注册表模式**，理解 `register → get_all → execute` 三步走 | 5 min |
-| 6 | `lank/tools/file_ops.py` 等 4 个工具模块 | 实际工具实现——学完这个就知道如何添加新工具 | 各 3-5 min |
-| 7 | `lank/ai_client.py` | **核心模块**：流式解析 + 工具调用循环，项目最复杂的文件 | 15 min |
-| 8 | `lank/memory.py` | 对话历史持久化 + 用户画像，独立模块，可单独阅读 | 5 min |
-| 9 | `lank/tui.py` | prompt_toolkit 实现的 TUI 界面，与 `cli.py` 是平行的 UI 入口 | 可选 |
-| 10 | `lank/utils.py` | 主题 / 统计 / 导出 / 更新检查，独立工具集，无复杂逻辑 | 可选 |
+| 4 | `lank/config.py` | 配置持久化（带缓存）、环境变量覆盖、交互式配置向导 | 5 min |
+| 5 | `lank/tools/__init__.py` | **工具注册表模式**，`register → get_all → execute`，v2 元数据/校验/白名单 | 5 min |
+| 6 | `lank/agent/types.py` → `loop.py` | **ReAct 框架核心**：数据模型 + 状态机（plan→act→review） | 10 min |
+| 7 | `lank/agent/planner.py` → `executor.py` → `reviewer.py` | 三个阶段实现，理解紧凑上下文与验收标准 | 10 min |
+| 8 | `lank/memory/` | 四层记忆：store/summarizer/extractor/retriever/forget | 10 min |
+| 9 | `lank/ai_client.py` | 底层 API：流式解析 + 工具循环 + 退避重试 | 10 min |
+| 10 | `lank/tui.py` / `utils.py` | UI 入口与工具集 | 可选 |
 
 ### 三条阅读路径
 
@@ -381,8 +420,9 @@ tools/__init__ ──→ tools/file_ops ──→ tools/__init__ (register_tool)
 - 🟡 **标准路径**（理解全貌）：按顺序 `1 → 8` 全部阅读，覆盖所有核心模块
 - 🔴 **扩展路径**（想添加功能）：
   - 添加新工具 → 重点读 `5 → 6`（工具注册 + 一个工具模块当模板）
+  - 修改 Agent 流程 → 重点读 `6 → 7`（AgentLoop + 三个阶段）
   - 添加新模型 → 重点读 `3 → 4`（模型配置 + 配置管理）
-  - 修改对话逻辑 → 重点读 `7`（AIClient）
+  - 修改记忆逻辑 → 重点读 `8`（memory/ 包）
 
 ### 关键设计模式
 
@@ -426,18 +466,30 @@ register_tool(
 
 `get_model(name)` 在 `MODELS` 字典中查找，找不到则返回 `FALLBACK_MODEL`。这意味着老的配置项（如之前的 `deepseek-chat`）不会报错，而是自动回退到 `deepseek-v4-flash`。
 
+**5. ReAct 状态机** (`agent/loop.py`)
+
+`AgentLoop` 是核心状态机：分类 → PLAN（拆解任务）→ ACT（每步紧凑上下文执行）→ REVIEW（对照验收标准）→ 未达标自动迭代。三个阶段通过 `planner`/`executor`/`reviewer` 实现，UI 层只提供回调（`AgentCallbacks`），框架与界面完全解耦。
+
+**6. 工具-循环通信** (`agent/context.py`)
+
+规划/执行/审核工具（`submit_plan`/`step_done`/`submit_review`）是模块级注册函数，通过 `agent.context` 的当前循环引用与运行中的 `AgentLoop` 通信，避免工具注册表与框架的循环依赖。
+
 ### 数据存储布局
 
-所有持久化数据都在 `~/.lank/` 下，纯 JSON 文件，无需数据库：
+所有持久化数据都在 `~/.lank/` 下，纯 JSON 文件，无需数据库（全部原子写入）：
 
 ```
 ~/.lank/
-├── config.json          # 用户配置（API Key、模型、主题等）
+├── config.json          # 用户配置（API Key、模型、主题、ReAct/记忆参数等）
 ├── stats.json           # 使用统计
 ├── todos.json           # 待办事项
+├── allowlist.json       # 工具/命令白名单（确认时可永久放行）
+├── logs/                # 日志（lank.log，滚动保留 3 份）
 ├── memory/
-│   ├── history/         # 对话历史 (YYYYMMDD_HHMMSS.json)
-│   └── profile.json     # 用户画像
+│   ├── history/         # 原始会话 (YYYYMMDD_HHMMSS_xxxx.json)
+│   ├── summaries.json   # 情景记忆：会话摘要（LLM 生成）
+│   ├── facts.json       # 语义记忆：事实/偏好（来源/重要性/提及次数）
+│   └── profile.json     # 用户画像（由 facts 聚合，兼容旧格式）
 └── exports/             # 对话导出 (Markdown / JSON)
 ```
 

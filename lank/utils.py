@@ -13,6 +13,20 @@ from .config import get_config
 STATS_FILE = Path.home() / ".lank" / "stats.json"
 
 
+def atomic_write_json(path: Path, data: Any) -> bool:
+    """原子写入 JSON 文件（临时文件 + os.replace，防止写坏）"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 # ===== 主题系统 =====
 
 THEMES = {
@@ -85,6 +99,15 @@ def get_theme() -> Dict[str, str]:
     return THEMES.get(theme_name, THEMES["default"])
 
 
+def trim_history(history: List[Dict[str, Any]], limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """会话滑动窗口：防止长会话上下文无限增长（优化清单 #上下文）"""
+    if limit is None:
+        limit = int(get_config("max_history", 100))
+    if len(history) > limit:
+        return history[-limit:]
+    return history
+
+
 def list_themes() -> str:
     """列出所有可用主题"""
     lines = ["🎨 可用主题:", ""]
@@ -115,13 +138,8 @@ def _load_stats() -> Dict[str, Any]:
 
 
 def _save_stats(stats: Dict[str, Any]) -> None:
-    """保存统计数据"""
-    STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with open(STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    """保存统计数据（原子写）"""
+    atomic_write_json(STATS_FILE, stats)
 
 
 def record_session(messages_count: int, tool_calls: int = 0) -> None:

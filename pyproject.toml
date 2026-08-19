@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lank"
-version = "0.2.0"
+version = "0.3.0"
 description = "私人 AI 终端助手 - 支持文件操作、命令执行、个性化记忆"
 readme = "README.md"
 requires-python = ">=3.8"

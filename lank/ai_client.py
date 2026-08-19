@@ -5,9 +5,11 @@ AI 客户端模块 - 调用 DeepSeek API
 
 import json
 import sys
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import get_config, set_config, _looks_like_api_key
+from .logs import get_logger
 from .model_config import (
     DEFAULT_API_BASE,
     DEFAULT_MODEL,
@@ -19,14 +21,18 @@ from .model_config import (
 )
 from .tools import get_all_tools, get_tool_descriptions, execute_tool, needs_approval
 
+logger = get_logger("ai_client")
+
 
 # 尝试导入 openai 库
 try:
     from openai import OpenAI
     from openai import APIConnectionError, APIError, AuthenticationError, RateLimitError
     HAS_OPENAI = True
+    _RETRYABLE_ERRORS = (RateLimitError, APIConnectionError, APIError)
 except ImportError:
     HAS_OPENAI = False
+    _RETRYABLE_ERRORS = (Exception,)
 
 
 def _build_tool_call_dict(tc: Any) -> Dict[str, Any]:
@@ -207,20 +213,14 @@ class AIClient:
         tool_desc = get_tool_descriptions()
         prompt = build_system_prompt(base_prompt, tool_desc)
 
-        # 注入跨会话记忆
+        # 注入跨会话记忆（记忆系统：画像 + 相关摘要，design.md §8.8）
         if get_config("memory_enabled", True):
             try:
-                from .memory import get_recent_context, get_profile_summary
+                from .memory import get_relevant_context
 
-                context = get_recent_context(max_sessions=2)
-                profile = get_profile_summary()
-                if context or profile:
-                    memory_text = ""
-                    if profile:
-                        memory_text += f"\n\n--- 用户档案 ---\n{profile}"
-                    if context:
-                        memory_text += f"\n\n--- 最近对话摘要 ---\n{context}"
-                    prompt += memory_text
+                memory_text = get_relevant_context("")
+                if memory_text:
+                    prompt += "\n\n" + memory_text
             except Exception:
                 pass  # 记忆注入失败不影响主流程
 
@@ -256,16 +256,27 @@ class AIClient:
     # ── 底层 API 调用 ──
 
     def _create_completion(self, messages: List[Dict[str, Any]], *, stream: bool):
-        """统一的 API 调用入口"""
+        """统一的 API 调用入口（带 429/5xx 指数退避重试）"""
         tools = get_all_tools()
-        return self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools if tools else None,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            stream=stream,
-        )
+        retries = int(get_config("api_max_retries", 2))
+        delay = 1.0
+        for attempt in range(retries + 1):
+            try:
+                return self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=tools if tools else None,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    stream=stream,
+                )
+            except _RETRYABLE_ERRORS as e:
+                if attempt >= retries:
+                    raise
+                logger.warning("API 请求失败，第 %d 次重试: %s", attempt + 1, e)
+                time.sleep(delay)
+                delay *= 2
+        raise RuntimeError("unreachable")
 
     def _run_tool_loop(
         self,
@@ -309,6 +320,7 @@ class AIClient:
                 try:
                     func_args = json.loads(tool_call.function.arguments)
                 except json.JSONDecodeError:
+                    logger.warning("工具 %s 参数 JSON 解析失败: %.200s", func_name, tool_call.function.arguments)
                     func_args = {}
 
                 if needs_approval(func_name) and self.safe_mode:
@@ -416,6 +428,7 @@ class AIClient:
                 try:
                     func_args = json.loads(tc_dict["function"]["arguments"])
                 except json.JSONDecodeError:
+                    logger.warning("工具 %s 参数 JSON 解析失败: %.200s", func_name, tc_dict["function"]["arguments"])
                     func_args = {}
 
                 if needs_approval(func_name) and self.safe_mode:
@@ -465,6 +478,51 @@ class AIClient:
             return False, "\n".join(lines), messages
         except APIError as e:
             return False, f"❌ API 错误: {e}", messages
+        except Exception as e:
+            return False, self._format_error(e), messages
+
+    def complete(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+    ) -> Tuple[bool, str, List[Dict[str, Any]]]:
+        """单轮非流式补全（供 Agent 框架使用，不执行工具循环）
+
+        模型仍可调用工具（全部注册工具可见），但本方法不执行工具，
+        调用方（planner/executor/reviewer）自行解析 tool_calls。
+
+        Args:
+            messages: 对话消息（不含 system message）
+            system_prompt: 自定义系统提示词（默认用内置构建）
+
+        Returns:
+            (success, content, 完整消息列表)
+        """
+        ready, msg = self.is_ready()
+        if not ready:
+            return False, msg, messages
+
+        system_msg = {
+            "role": "system",
+            "content": system_prompt or self._build_system_prompt(),
+        }
+        try:
+            response = self._create_completion([system_msg] + messages, stream=False)
+            assistant_msg = response.choices[0].message
+            content = assistant_msg.content or ""
+            entry: Dict[str, Any] = {"role": "assistant", "content": content}
+            if assistant_msg.tool_calls:
+                entry["tool_calls"] = [
+                    _build_tool_call_dict(tc) for tc in assistant_msg.tool_calls
+                ]
+            messages.append(entry)
+            return True, content, messages
+        except AuthenticationError:
+            return False, "❌ API Key 认证失败，请检查 API Key 是否正确 (lank set set api_key 你的key)", messages
+        except RateLimitError:
+            return False, "❌ 请求过于频繁，请稍后再试", messages
+        except APIConnectionError:
+            return False, "❌ 网络连接失败，请检查网络与 API 地址", messages
         except Exception as e:
             return False, self._format_error(e), messages
 

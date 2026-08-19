@@ -34,6 +34,28 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "safe_mode": True,  # 危险操作前是否需要确认
     "memory_enabled": True,
     "max_history": 100,
+    # ── v0.3.0：ReAct 框架 ──
+    "auto_mode": False,             # True 时计划自动确认、review 自动通过（全自动）
+    "max_plan_steps": 10,           # 单计划最大步骤数
+    "max_review_rounds": 3,         # review 未达标最大迭代轮数
+    "plan_prompt": "",              # 覆盖 PLAN_PROMPT
+    "exec_prompt": "",              # 覆盖 EXEC_PROMPT
+    "review_prompt": "",            # 覆盖 REVIEW_PROMPT
+    # ── 安全与上下文 ──
+    "tool_output_limit": 8192,      # 工具结果截断字符数
+    "cmd_output_limit": 20480,      # 命令输出截断字符数
+    "cmd_timeout": 60,              # 命令超时秒数
+    "cmd_allowlist": [],            # 命令白名单（可自动执行）
+    "api_max_retries": 2,           # API 429/5xx 退避重试次数
+    # ── 记忆系统 ──
+    "memory_summary_max_chars": 2000,         # 会话摘要长度上限
+    "memory_long_session_threshold": 20000,   # 触发长会话增量总结的 token 阈值
+    "memory_top_k": 5,                        # 检索注入条数
+    "memory_relevance_weight": 0.4,           # 检索权重：相关性
+    "memory_freshness_weight": 0.3,           # 检索权重：新鲜度
+    "memory_importance_weight": 0.3,          # 检索权重：重要性
+    "memory_max_facts": 200,                  # 语义记忆容量上限
+    "memory_auto_extract": True,              # 会话后自动抽取画像
 }
 
 
@@ -43,14 +65,30 @@ def ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# 进程级配置缓存：避免高频 get_config 反复读盘（优化清单 #6）
+_config_cache: Optional[Dict[str, Any]] = None
+
+
+def _invalidate_cache() -> None:
+    """使配置缓存失效"""
+    global _config_cache
+    _config_cache = None
+
+
 def load_config() -> Dict[str, Any]:
     """加载配置，如果文件不存在则返回默认配置
-    
+
     优先级（从高到低）：
     1. 环境变量 OPENAI_API_KEY（如果设置了，会覆盖配置文件中的值）
     2. 配置文件 ~/.lank/config.json
     3. 默认配置
+
+    带进程级缓存，set_config/save_config 后自动失效。
     """
+    global _config_cache
+    if _config_cache is not None:
+        return dict(_config_cache)
+
     ensure_config_dir()
     if CONFIG_FILE.exists():
         try:
@@ -63,32 +101,35 @@ def load_config() -> Dict[str, Any]:
             merged = DEFAULT_CONFIG.copy()
     else:
         merged = DEFAULT_CONFIG.copy()
-    
+
     # 环境变量覆盖：OPENAI_API_KEY
     env_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if env_key:
         merged["api_key"] = env_key
-    
+
     # 环境变量覆盖：OPENAI_API_BASE
     env_base = os.environ.get("OPENAI_API_BASE", "").strip()
     if env_base:
         merged["api_base"] = env_base
-    
+
     # 环境变量覆盖：OPENAI_MODEL
     env_model = os.environ.get("OPENAI_MODEL", "").strip()
     if env_model:
         merged["model"] = env_model
-    
-    return merged
 
+    _config_cache = merged
+    return dict(merged)
 
 
 def save_config(config: Dict[str, Any]) -> bool:
-    """保存配置到文件"""
+    """保存配置到文件（原子写，成功后失效缓存）"""
     ensure_config_dir()
+    tmp = CONFIG_FILE.with_suffix(".json.tmp")
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, CONFIG_FILE)
+        _invalidate_cache()
         return True
     except IOError as e:
         print(f"保存配置失败: {e}")

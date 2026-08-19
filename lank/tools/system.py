@@ -75,9 +75,20 @@ def calculate(expression: str) -> str:
     for c in expression:
         if c not in allowed_chars:
             return f"错误: 表达式包含不允许的字符: '{c}'"
-    
+
+    # 防 DoS：禁用幂运算（9**9**9 可打满 CPU/内存）
+    if "**" in expression:
+        return "错误: 不支持幂运算 (**)"
+
+    # 防 DoS：表达式长度上限
+    if len(expression) > 100:
+        return "错误: 表达式过长（最多 100 字符）"
+
     try:
         result = eval(expression, {"__builtins__": {}}, {})
+        # 结果大小检查，防止大数运算
+        if isinstance(result, (int, float)) and abs(result) > 1e15:
+            return "错误: 结果过大，请简化表达式"
         return f"{expression} = {result}"
     except ZeroDivisionError:
         return "错误: 除以零"
