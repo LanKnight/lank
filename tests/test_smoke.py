@@ -236,26 +236,20 @@ class TestChatApp(unittest.TestCase):
         self.assertIn("未知命令", texts)
 
     def test_scroll_anchor(self):
-        """cursor 锚定滚动：回看时锚点上移，新消息重置回底部"""
+        """cursor 锚定滚动：回看时锚点行上移，新消息重置回底部"""
         app = self._make_app()
         for i in range(6):
             app._add_message("user" if i % 2 == 0 else "assistant", f"消息 {i} 内容")
 
-        def anchor_line(ft):
-            pos = 0
-            for style, text in ft:
-                if style == "[SetCursorPosition]":
-                    return pos
-                pos += text.count("\n") + 1
-            return -1
-
         app._back_lines = 0
-        bottom = anchor_line(app._render_messages())
+        bottom_y = app._get_cursor_position().y
         app._back_lines = 50
-        top = anchor_line(app._render_messages())
-        self.assertLess(top, bottom)          # 回看：锚点移向顶部
+        top_y = app._get_cursor_position().y
+        self.assertLess(top_y, bottom_y)          # 回看：锚点移向顶部
+        self.assertEqual(top_y, 0)                # 回看够多 → 顶部
         app._add_message("system", "新消息")
-        self.assertEqual(app._back_lines, 0)  # 新消息：重置回底部
+        self.assertEqual(app._back_lines, 0)      # 新消息：重置回底部
+        self.assertGreater(app._get_cursor_position().y, bottom_y)  # 底部锚点下移
 
     def test_ask_bridge(self):
         """AI 线程提问 ↔ UI 线程回答 桥接"""
@@ -275,6 +269,47 @@ class TestChatApp(unittest.TestCase):
         t.join(3)
         self.assertEqual(result.get("ans"), "回答A")
         self.assertIsNone(app._pending_ask)
+
+    def test_history_resume_commands(self):
+        """/history 与 /resume：恢复历史会话到消息区"""
+        import json
+        from pathlib import Path
+        app = self._make_app()
+
+        # 构造一个临时会话文件（monkeypatch 存储路径到 workspace 临时目录）
+        tmp = Path(".test_hist_tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        import lank.memory.store as ms
+        ms.HISTORY_DIR = tmp / "history"
+        ms.MEMORY_DIR = tmp
+        ms.SUMMARIES_FILE = tmp / "summaries.json"
+        ms.FACTS_FILE = tmp / "facts.json"
+        ms.PROFILE_FILE = tmp / "profile.json"
+        ms.ensure_memory_dir()
+
+        sid = ms.save_conversation([
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好！有什么可以帮你？"},
+        ])
+        self.assertTrue(sid)
+
+        app._handle_command("/resume " + sid)
+        texts = [t for _, t in app.messages]
+        self.assertTrue(any("已恢复会话" in t for t in texts))
+        self.assertEqual(len(app.ai_history), 2)   # user + assistant 恢复
+        self.assertEqual(app.session_id, sid)
+
+        app._handle_command("/history")
+        texts = [t for _, t in app.messages]
+        self.assertTrue(any("最近会话" in t for t in texts))
+
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_history_empty(self):
+        app = self._make_app()
+        app._handle_command("/resume nonexist_session_xyz")
+        texts = [t for _, t in app.messages]
+        self.assertTrue(any("未找到会话" in t for t in texts))
 
     def test_confirm_bridge(self):
         import threading
