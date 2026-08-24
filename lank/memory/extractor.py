@@ -59,7 +59,8 @@ def extract_facts(messages: List[Dict[str, Any]], client=None) -> List[Dict[str,
         facts = _parse_facts(response)
         return facts
     except Exception as e:
-        logger.warning("事实抽取失败: %s", e)
+        # 次要功能失败不打扰用户（INFO 只进日志文件）
+        logger.info("事实抽取失败（可忽略）: %s", e)
         return []
 
 
@@ -86,17 +87,47 @@ def _parse_facts(response: str) -> List[Dict[str, Any]]:
         data = json.loads(text)
         if isinstance(data, list):
             return [f for f in (_normalize(i) for i in data) if f]
+        if isinstance(data, dict):
+            # 单对象或 {"facts": [...]} 包装
+            if "facts" in data and isinstance(data["facts"], list):
+                return [f for f in (_normalize(i) for i in data["facts"]) if f]
+            single = _normalize(data)
+            return [single] if single else []
     except json.JSONDecodeError:
-        # 尝试提取 JSON 数组片段
-        try:
-            start, end = text.find("["), text.rfind("]")
+        pass
+
+    # ── 宽松解析：模型可能返回非标准格式 ──
+    # 1) 提取 JSON 数组片段
+    try:
+        start, end = text.find("["), text.rfind("]")
+        if start != -1 and end > start:
+            data = json.loads(text[start:end + 1])
+            if isinstance(data, list):
+                return [f for f in (_normalize(i) for i in data) if f]
+    except json.JSONDecodeError:
+        pass
+
+    # 2) {"facts": [...]} 形式（找 {"facts" ...}）
+    try:
+        start = text.find('"facts"')
+        if start != -1:
+            start = text.find("[", start)
+            end = text.rfind("]")
             if start != -1 and end > start:
                 data = json.loads(text[start:end + 1])
                 if isinstance(data, list):
                     return [f for f in (_normalize(i) for i in data) if f]
-        except json.JSONDecodeError:
-            pass
-    return []
+    except json.JSONDecodeError:
+        pass
+
+    # 3) 裸 "text": "值" 键值对逐行提取
+    import re as _re
+    facts: List[Dict[str, Any]] = []
+    for m in _re.finditer(r'"text"\s*:\s*"([^"]+)"', text):
+        val = m.group(1).strip()
+        if val and len(val) <= 200:
+            facts.append({"text": val, "importance": 1})
+    return facts
 
 
 def extract_and_update_profile(

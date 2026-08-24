@@ -56,13 +56,14 @@ def set_console_logging(enabled: bool) -> None:
     """启用/禁用终端(stderr)日志输出。
 
     全屏 TUI 运行时禁用——后台线程的 warning 直接写 stderr 会把
-    prompt_toolkit 备用屏幕打花。日志文件不受影响。
+    prompt_toolkit 备用屏幕打花。恢复时回到初始级别 WARNING
+    （INFO 等低频日志只进文件，不打扰终端）。日志文件不受影响。
     """
     setup_logging()
     root = logging.getLogger("lank")
     for h in root.handlers:
         if isinstance(h, logging.StreamHandler):
-            h.setLevel(logging.INFO if enabled else logging.CRITICAL + 10)
+            h.setLevel(logging.WARNING if enabled else logging.CRITICAL + 10)
 
 
 def get_logger(name: str = "lank") -> logging.Logger:
