@@ -77,6 +77,7 @@ class Executor:
                 stream=True,
                 on_tool_call=on_tool_call,
                 on_text=on_text,
+                system_prompt=prompt,  # EXEC_PROMPT + 工具描述
             )
         except Exception as e:
             logger.exception("步骤 #%d 执行异常", step.id)

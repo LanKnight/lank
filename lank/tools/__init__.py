@@ -20,6 +20,9 @@ logger = get_logger("tools")
 
 # 工具注册表
 _tool_registry: Dict[str, Dict[str, Any]] = {}
+# 注册后不变的内容缓存（注册/变更时失效）
+_tool_desc_cache: Optional[str] = None
+_tool_schema_cache: Optional[List[Dict[str, Any]]] = None
 
 # 白名单文件 ~/.lank/allowlist.json
 ALLOWLIST_FILE = Path.home() / ".lank" / "allowlist.json"
@@ -83,6 +86,14 @@ def register_tool(
         "danger_level": danger_level,
         "approval": approval,
     }
+    _invalidate_tool_cache()
+
+
+def _invalidate_tool_cache() -> None:
+    """注册表变化时失效派生缓存"""
+    global _tool_desc_cache, _tool_schema_cache
+    _tool_desc_cache = None
+    _tool_schema_cache = None
 
 
 def get_tool(name: str) -> Optional[Dict[str, Any]]:
@@ -91,7 +102,10 @@ def get_tool(name: str) -> Optional[Dict[str, Any]]:
 
 
 def get_all_tools() -> List[Dict[str, Any]]:
-    """获取所有工具信息（用于 API 调用）"""
+    """获取所有工具信息（用于 API 调用；缓存，注册后不变）"""
+    global _tool_schema_cache
+    if _tool_schema_cache is not None:
+        return list(_tool_schema_cache)
     tools = []
     for name, info in _tool_registry.items():
         tools.append({
@@ -112,12 +126,17 @@ def get_all_tools() -> List[Dict[str, Any]]:
                 },
             },
         })
-    return tools
+    _tool_schema_cache = tools
+    return list(tools)
 
 
 def get_tool_descriptions() -> str:
-    """获取工具描述文本（用于系统提示词）"""
+    """获取工具描述文本（用于系统提示词；缓存，注册后不变）"""
+    global _tool_desc_cache
+    if _tool_desc_cache is not None:
+        return _tool_desc_cache
     if not _tool_registry:
+        _tool_desc_cache = ""
         return ""
 
     lines = ["\n## 可用工具", ""]
@@ -133,7 +152,9 @@ def get_tool_descriptions() -> str:
             lines.append("⚠️ 需要用户确认")
         lines.append("")
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    _tool_desc_cache = result
+    return result
 
 
 def _validate_arguments(info: Dict[str, Any], arguments: Dict[str, Any]) -> Optional[str]:
@@ -246,8 +267,20 @@ def _prefix_match(pattern: str, hint: str) -> bool:
     return re.match(r"^{}(\s|$)".format(re.escape(pattern)), hint) is not None
 
 
+_SHELL_META_CHARS = set("&|;><()^`\n")
+
+
+def _has_shell_meta(s: str) -> bool:
+    """检查剩余命令段是否含 shell 链式/重定向元字符"""
+    return any(c in _SHELL_META_CHARS for c in s)
+
+
 def _is_allowlisted(name: str, arg_hint: str = "") -> bool:
-    """判断工具调用是否命中白名单"""
+    """判断工具调用是否命中白名单
+
+    命令前缀命中后，剩余部分含 shell 元字符（& | ; > < 等）时**不放行**——
+    防止 'git status && rm -rf /' 借 'git status' 白名单免确认执行。
+    """
     data = _load_allowlist()
     hint = arg_hint.lower()
     # execute_command 只走命令前缀白名单——tools 列表里的同名条目不生效，
@@ -260,13 +293,14 @@ def _is_allowlisted(name: str, arg_hint: str = "") -> bool:
     for entry in commands:
         pattern = (entry.get("pattern") or "").lower()
         if _prefix_match(pattern, hint):
-            return True
+            return not _has_shell_meta(hint[len(pattern):])
     # 配置项 cmd_allowlist 同样作为命令前缀白名单生效
     if name == "execute_command":
         cfg_list = get_config("cmd_allowlist", []) or []
         for pat in cfg_list:
-            if _prefix_match(str(pat).lower(), hint):
-                return True
+            pat = str(pat).lower()
+            if _prefix_match(pat, hint):
+                return not _has_shell_meta(hint[len(pat):])
     return False
 
 

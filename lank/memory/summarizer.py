@@ -36,14 +36,16 @@ def _estimate_tokens(text: str) -> int:
     return cjk + other // 4
 
 
-def _call_llm_summarize(messages: List[Dict[str, Any]], prev_summary: str, max_chars: int) -> Optional[str]:
-    """调用 LLM 生成摘要（失败返回 None）"""
+def _call_llm_summarize(messages: List[Dict[str, Any]], prev_summary: str, max_chars: int,
+                        client=None) -> Optional[str]:
+    """调用 LLM 生成摘要（失败返回 None；client 为空时自建）"""
     try:
-        from ..ai_client import AIClient
-        client = AIClient()
-        ready, _ = client.is_ready()
-        if not ready:
-            return None
+        if client is None:
+            from ..ai_client import AIClient
+            client = AIClient()
+            ready, _ = client.is_ready()
+            if not ready:
+                return None
         content = "\n".join(
             f"{m.get('role')}: {str(m.get('content', ''))[:500]}"
             for m in messages if m.get("role") in ("user", "assistant")
@@ -85,7 +87,7 @@ def summarize_conversation(
     if not messages:
         return None
     max_chars = int(get_config("memory_summary_max_chars", 2000))
-    summary = _call_llm_summarize(messages, prev_summary, max_chars)
+    summary = _call_llm_summarize(messages, prev_summary, max_chars, client=client)
     return summary
 
 

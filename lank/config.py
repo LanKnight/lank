@@ -6,6 +6,7 @@
 import json
 import os
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,9 @@ from .model_config import (
 )
 
 logger = get_logger("config")
+
+# 写路径锁：防止并发 set_config 读-改-写丢更新
+_config_lock = threading.Lock()
 
 CONFIG_DIR = Path.home() / ".lank"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -182,10 +186,14 @@ def get_int(key: str, default: int) -> int:
 
 
 def set_config(key: str, value: Any) -> bool:
-    """设置单个配置项"""
-    config = load_config()
-    config[key] = value
-    return save_config(config)
+    """设置单个配置项（加锁防并发丢更新；env 覆盖的键不会被写入文件）"""
+    with _config_lock:
+        if key in _env_overrides:
+            logger.warning("配置项 %s 由环境变量管理，无法写入文件", key)
+            return False
+        config = load_config()
+        config[key] = value
+        return save_config(config)
 
 
 def get_working_dir() -> str:

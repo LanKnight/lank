@@ -406,6 +406,7 @@ class AIClient:
         stream: bool = True,
         on_tool_call: Optional[Callable] = None,
         on_text: Optional[Callable] = None,
+        system_prompt: Optional[str] = None,
     ) -> Tuple[bool, str, List[Dict[str, Any]]]:
         """与 AI 对话
 
@@ -414,6 +415,7 @@ class AIClient:
             stream:   True → 流式输送到 on_text；False → 一次性返回
             on_tool_call: 工具调用回调 (name, args, result=None) -> bool
             on_text:      文本回调 (delta: str)，流式模式下每个 token 调用一次
+            system_prompt: 自定义系统提示词（默认用内置构建；Agent 各阶段传入专用提示词）
 
         Returns:
             (success, final_response, updated_messages)
@@ -422,7 +424,10 @@ class AIClient:
         if not ready:
             return False, msg, messages
 
-        system_msg = {"role": "system", "content": self._build_system_prompt()}
+        system_msg = {
+            "role": "system",
+            "content": system_prompt or self._build_system_prompt(),
+        }
 
         try:
             # ── 首次请求：流式 ──
@@ -571,7 +576,17 @@ class AIClient:
         except RateLimitError:
             return False, "❌ 请求过于频繁，请稍后再试", messages
         except APIConnectionError:
-            return False, "❌ 网络连接失败，请检查网络与 API 地址", messages
+            safe_base = _safe_display_url(self.api_base)
+            lines = [
+                "❌ 网络连接失败，请检查：",
+                "  1. 网络是否正常连接",
+                f"  2. API 地址是否正确 (当前: {safe_base})",
+                "  3. 是否需要配置代理 (设置 HTTP_PROXY/HTTPS_PROXY 环境变量)",
+            ]
+            if self._config_warnings:
+                lines.append("")
+                lines.extend(self._config_warnings)
+            return False, "\n".join(lines), messages
         except Exception as e:
             return False, self._format_error(e), messages
 

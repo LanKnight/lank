@@ -109,10 +109,19 @@ class AgentLoop:
 
                 verdict = reviewer.review(plan)
                 if verdict is None:
-                    # 审核失败：直接交付当前结果
+                    # 审核失败（模型未提交判定）：告知用户后按当前结果交付
                     plan.status = PlanStatus.FINISHED
+                    text = self._summarize(plan) + "\n\n（⚠️ 审核未完成，已按当前结果交付）"
+                    if self.callbacks.on_review:
+                        try:
+                            from .types import ReviewVerdict
+                            self.callbacks.on_review(
+                                ReviewVerdict(deliverable=True,
+                                              summary="审核未完成，已按当前结果交付"))
+                        except Exception:
+                            pass
                     return AgentResult(
-                        True, self._summarize(plan),
+                        True, text,
                         phase=AgentPhase.REVIEW, plan=plan,
                     )
 
@@ -163,6 +172,7 @@ class AgentLoop:
         lines = [f"📋 任务「{plan.goal}」执行结束", ""]
         done = [s for s in plan.steps if s.status == StepStatus.DONE]
         blocked = [s for s in plan.steps if s.status == StepStatus.BLOCKED]
+        pending = [s for s in plan.steps if s.status == StepStatus.PENDING]
         lines.append(f"完成 {len(done)}/{len(plan.steps)} 步：")
         for s in done:
             lines.append(f"  ✅ {s.title}")
@@ -170,4 +180,6 @@ class AgentLoop:
                 lines.append(f"     结果: {s.summary[:100]}")
         for s in blocked:
             lines.append(f"  ⛔ {s.title}（{s.summary[:60]}）")
+        for s in pending:
+            lines.append(f"  ⏳ {s.title}（未执行）")
         return "\n".join(lines)

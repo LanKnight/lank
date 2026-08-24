@@ -54,11 +54,13 @@ class ChatApp:
         self.tool_count = 0
         self.session_id: Optional[str] = None
         self.ai_available = False
-        self.streaming_text = ""
         self._streamed_parts: List[str] = []
+        self._static_items_cache = None   # 消息区静态渲染片段缓存（防每帧重建）
+        self._static_items_key = None
         self._pending_ask: Optional[Dict[str, Any]] = None  # 待回答的交互
         self._back_lines = 0      # 回看行数（0=底部），PageUp/PageDown 调整
         self._ai_running = False  # 单一 AI 运行互斥（防止并发线程踩踏）
+        self._finalized_sessions = set()  # 已做过会话总结的 session（防重复 LLM 调用）
         self._lock = threading.Lock()
 
         # prompt_toolkit 组件（PT_AVAILABLE 时创建）
@@ -87,8 +89,13 @@ class ChatApp:
 
     # ═══════════════ 渲染 ═══════════════
 
-    def _build_render_items(self) -> List[Tuple[str, str]]:
-        """构建消息区渲染片段（不持锁，由调用方在锁内调用）"""
+    def _static_messages_items(self) -> List[Tuple[str, str]]:
+        """消息区静态片段（不含流式）——按内容指纹缓存，避免每帧重建全部消息"""
+        key = (len(self.messages),
+               self.messages[-1][1][:40] if self.messages else "",
+               self.messages[-1][0] if self.messages else "")
+        if self._static_items_cache is not None and self._static_items_key == key:
+            return self._static_items_cache
         items: List[Tuple[str, str]] = []
         for role, text in self.messages:
             if role == "user":
@@ -99,14 +106,27 @@ class ChatApp:
                 items.append(("class:chat.tool", f"🔧 {str(text)[:300]}\n\n"))
             else:
                 items.append(("class:chat.sys", f"⚙ {text}\n\n"))
-        if self.streaming_text:
-            items.append(("class:chat.ai", f"▸ AI: {self.streaming_text}"))
-        elif not self.messages:
-            items.append(("class:chat.sys",
-                          "欢迎使用 LANK — 输入 /help 查看帮助\n"
-                          "输入框固定在底部，PageUp/PageDown 回看历史\n"
-                          "/history 查看历史会话 | /resume <ID> 恢复"))
+        self._static_items_cache = items
+        self._static_items_key = key
         return items
+
+    def _build_render_items(self) -> List[Tuple[str, str]]:
+        """构建消息区渲染片段（不持锁，由调用方在锁内调用）"""
+        items = self._static_messages_items()
+        if self._streamed_parts:
+            items = list(items) + [("class:chat.ai", f"▸ AI: {''.join(self._streamed_parts)}")]
+        elif not self.messages:
+            items = [("class:chat.sys",
+                      "欢迎使用 LANK — 输入 /help 查看帮助\n"
+                      "输入框固定在底部，PageUp/PageDown 回看历史\n"
+                      "/history 查看历史会话 | /resume <ID> 恢复")]
+        return items
+
+    def _render_line_count(self) -> int:
+        """当前渲染逻辑行数（调用方需持锁）"""
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.formatted_text.utils import split_lines
+        return len(list(split_lines(FormattedText(self._build_render_items()))))
 
     def _get_cursor_position(self):
         """滚动锚点：用与渲染完全相同的 split_lines 行数计算，保证永不越界"""
@@ -139,10 +159,13 @@ class ChatApp:
         self._back_lines = 0
 
     def _add_message(self, role: str, text: str) -> None:
-        """追加一条消息并刷新（自动回到最新位置）"""
+        """追加一条消息并刷新
+
+        回看位置保持：用户正在回看历史（_back_lines > 0）时不被新消息拉回底部；
+        位于底部时锚点自动跟随最后一行。
+        """
         with self._lock:
             self.messages.append((role, text))
-            self._back_lines = 0
         self._invalidate()
 
     def _invalidate(self) -> None:
@@ -199,8 +222,8 @@ class ChatApp:
         from .agent import AgentCallbacks
 
         def on_text(text: str) -> None:
+            # 只 append 片段，渲染时 join（避免逐 token 字符串累加的 O(n²)）
             with self._lock:
-                self.streaming_text += text
                 self._streamed_parts.append(text)
             self._invalidate()
 
@@ -213,6 +236,7 @@ class ChatApp:
                 ans = {"val": ""}
                 self._ask_sync(question, lambda a: ans.update(val=a.strip().lower()))
                 v = ans["val"]
+                # 白名单式判定：只有明确的 y/yes/是/a 放行；空回车/超时/乱输一律拒绝（安全默认）
                 if v == "a":
                     try:
                         from .tools import allow_forever
@@ -222,10 +246,10 @@ class ChatApp:
                         pass
                     self._add_message("system", f"🔧 正在执行工具: {name}")
                     return True
-                if v in ("n", "no"):
-                    return False
-                self._add_message("system", f"🔧 正在执行工具: {name}")
-                return True
+                if v in ("y", "yes", "是", "ok"):
+                    self._add_message("system", f"🔧 正在执行工具: {name}")
+                    return True
+                return False
             else:
                 with self._lock:
                     self.tool_count += 1
@@ -234,9 +258,7 @@ class ChatApp:
 
         def on_plan_render(plan):
             from .agent.types import render_plan_text
-            self._add_message("system", "📋 AI 的执行计划:")
-            for line in render_plan_text(plan).splitlines():
-                self._add_message("system", line)
+            self._add_message("system", "📋 AI 的执行计划:\n" + render_plan_text(plan))
 
         def on_plan_confirm(plan):
             return self.confirm_sync("是否按此计划执行? (y/n)")
@@ -257,7 +279,6 @@ class ChatApp:
             if phase == "start":
                 # 步骤开始：清空流式残留，显示进度
                 with self._lock:
-                    self.streaming_text = ""
                     self._streamed_parts = []
                 self._add_message("system", f"⏳ [步骤 {step.id}] {step.title} ...")
             else:
@@ -290,7 +311,6 @@ class ChatApp:
                 memory_text = ""
 
             with self._lock:
-                self.streaming_text = ""
                 self._streamed_parts = []
 
             result = loop.run(user_input, memory_text=memory_text)
@@ -302,7 +322,7 @@ class ChatApp:
                 else:
                     # 复杂任务：用审核后的交付总结（不拼接执行过程碎片）
                     full = result.response or "（任务执行完成）"
-                self.streaming_text = ""
+                self._streamed_parts = []
 
             if result.success:
                 self._add_message("assistant", full)
@@ -310,6 +330,10 @@ class ChatApp:
                     self.ai_history.append({"role": "assistant", "content": full})
             else:
                 self._add_message("system", f"⚠️ {result.response}")
+                # 终审驳回等 REVIEW 阶段失败：交付文本也进历史，避免上下文断裂
+                if result.phase.value == "review":
+                    with self._lock:
+                        self.ai_history.append({"role": "assistant", "content": result.response})
 
             # 保存会话（会话内复用 session_id）+ 长会话增量滚动总结
             try:
@@ -318,7 +342,9 @@ class ChatApp:
                     sid = save_conversation(self.ai_history, session_id=self.session_id)
                     if sid:
                         self.session_id = sid
-                    if self.session_id and needs_rollup(self.ai_history):
+                    if self.session_id and self.session_id not in self._finalized_sessions \
+                            and needs_rollup(self.ai_history):
+                        self._finalized_sessions.add(self.session_id)
                         threading.Thread(
                             target=finalize_session,
                             args=(self.session_id, self.ai_history),
@@ -327,6 +353,8 @@ class ChatApp:
             except Exception:
                 pass
         except Exception as e:
+            with self._lock:
+                self._streamed_parts = []  # 失败路径也清残留
             self._add_message("system", f"⚠️ AI 调用失败: {e}")
         finally:
             with self._lock:
@@ -368,19 +396,21 @@ class ChatApp:
             if self.ai_mode and not self.ai_available:
                 self._add_message("system", "⚠️ AI 模式不可用，请先配置 API Key (lank set)")
             else:
-                self._stream_reply(FIXED_REPLY)
+                # 普通模式：打字效果放后台线程，不阻塞输入
+                threading.Thread(target=self._stream_reply,
+                                 args=(FIXED_REPLY,), daemon=True).start()
 
     def _stream_reply(self, text: str) -> None:
         """普通模式：模拟流式打字效果"""
         with self._lock:
-            self.streaming_text = ""
+            self._streamed_parts = []
         for ch in text:
             with self._lock:
-                self.streaming_text += ch
+                self._streamed_parts.append(ch)
             self._invalidate()
             time.sleep(0.02)
         with self._lock:
-            self.streaming_text = ""
+            self._streamed_parts = []
         self._add_message("assistant", text)
 
     def _handle_command(self, text: str) -> None:
@@ -407,9 +437,15 @@ class ChatApp:
                 out.append("⚠️ 自动模式保存失败")
         elif cmd == "/clear":
             with self._lock:
+                if self._ai_running:
+                    self.messages.append(("system", "⚠️ 任务执行中，请先等待完成（Ctrl+C 可中断）"))
+                    self._back_lines = 0
+                    self._invalidate()
+                    return
                 self.messages = [("system", "对话已清空")]
                 self.ai_history = []
                 self.session_id = None  # 清空后开新会话，避免旧 id 覆盖写入
+                self._streamed_parts = []
             self._back_lines = 0
             self._invalidate()
             return
@@ -430,6 +466,11 @@ class ChatApp:
                 out.append("无法读取历史")
         elif cmd == "/resume":
             try:
+                with self._lock:
+                    if self._ai_running:
+                        self.messages.append(("system", "⚠️ 任务执行中，请先等待完成再恢复会话"))
+                        self._invalidate()
+                        return
                 from .memory import load_conversation
                 sid = cmd_arg.strip()
                 msgs = load_conversation(sid) if sid else None
@@ -446,6 +487,7 @@ class ChatApp:
                             dict(m) for m in msgs if m.get("role") in ("user", "assistant")
                         ]
                         self.session_id = sid
+                        self._streamed_parts = []
                     self._back_lines = 0
                     out.append(f"已恢复会话 {sid}（{len(msgs)} 条消息），可继续对话")
             except Exception:
@@ -571,14 +613,17 @@ class ChatApp:
 
         @kb.add("pageup")
         def _pageup(event):
-            # 向上回看 10 行
-            self._back_lines = min(self._back_lines + 10, 10 ** 6)
+            # 向上回看 10 行（上限按实际行数，避免 10**6 卡死）
+            with self._lock:
+                n = _render_line_count()
+            self._back_lines = min(self._back_lines + 10, max(0, n - 1))
             self._invalidate()
 
         @kb.add("pagedown")
         def _pagedown(event):
-            # 向下回到最新
-            self._back_lines = max(0, self._back_lines - 10)
+            with self._lock:
+                n = _render_line_count()
+            self._back_lines = max(0, min(self._back_lines, n - 1) - 10)
             self._invalidate()
 
         @kb.add("c-home")
@@ -642,9 +687,17 @@ class ChatApp:
         text = buff.text
         with self._lock:
             pending = self._pending_ask
-            self._pending_ask = None
         if pending is not None:
-            pending["callback"](text)
+            stripped = text.strip()
+            if stripped.startswith("/"):
+                # 确认期间输入命令：回退给命令处理，不消费确认（用户可先 /history 等）
+                with self._lock:
+                    self._pending_ask = pending  # 保留确认状态
+                self._handle_input(text)
+            else:
+                with self._lock:
+                    self._pending_ask = None
+                pending["callback"](text)
         else:
             self._handle_input(text)
         buff.reset()
@@ -679,9 +732,17 @@ class ChatApp:
         finally:
             set_console_logging(True)
 
+        # 退出前：若 AI 线程仍在跑，先给它一点时间完成保存（防对话丢失）
+        if self._ai_running:
+            with self._lock:
+                self._streamed_parts = []
+            deadline = time.time() + 3
+            while self._ai_running and time.time() < deadline:
+                time.sleep(0.05)
+
         # 退出：会话总结 + 画像抽取（记忆系统）
         # 放后台线程执行（短超时），绝不阻塞退出；最多等 5 秒
-        if self.ai_history and self.session_id:
+        if self.ai_history and self.session_id and self.session_id not in self._finalized_sessions:
             def _finalize():
                 try:
                     from .memory import finalize_session, extract_and_update_profile

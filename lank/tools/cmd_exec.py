@@ -64,7 +64,9 @@ DANGEROUS_PATTERNS: List[str] = [
 # 删除类命令（POSIX argv 级拦截：无论旗标都算高危）
 _DELETE_COMMANDS = {"rm", "rmdir", "del", "rd", "erase", "unlink"}
 # rm 带递归/强制旗标才致命；其他删除命令无旗标也拦截
-_DELETE_FATAL_FLAGS = {"-r", "-f", "-rf", "-fr", "--recursive", "--force", "-R"}
+# 同时覆盖 Windows cmd 附加开关形式（/q /s /f /sq /f/s/q 等）
+_DELETE_FATAL_FLAGS = {"-r", "-f", "-rf", "-fr", "--recursive", "--force", "-R",
+                       "/r", "/f", "/q", "/s", "/sq", "/fq", "/s/q", "/f/s", "/f/s/q"}
 
 _DANGEROUS_REGEX = re.compile("|".join(DANGEROUS_PATTERNS), re.IGNORECASE)
 
@@ -78,13 +80,33 @@ def _check_dangerous(command: str) -> Optional[str]:
 
 
 def _check_dangerous_argv(argv: List[str]) -> Optional[str]:
-    """对解析后的 argv 做删除类命令检查（黑名单第二道防线，防转义/长选项绕过）"""
+    """对解析后的 argv 做删除类命令检查（黑名单第二道防线）
+
+    兼容 Windows cmd 附加开关形式（del/q、rd/s、rmdir/s）与 POSIX 长选项。
+    """
     if not argv:
         return None
-    cmd = argv[0].lower().split("\\")[-1].split("/")[-1]  # 去掉路径/转义
+    first = argv[0].lower()
+    cmd = first
+    flags: set = set()
+
+    if not first.startswith(("/", "-", "\\")) and "/" in first:
+        # Windows 附加开关形式：del/q → 命令 del + 开关 /q
+        parts = first.split("/")
+        cmd = parts[0]
+        flags.update("/" + p for p in parts[1:] if p)
+    else:
+        cmd = first.split("\\")[-1].split("/")[-1]
+
+    # 合并命令行中其他位置的旗标
+    for a in argv[1:]:
+        if a.startswith("-"):
+            flags.add(a.lower())
+        elif a.startswith("/") and len(a) > 1:
+            flags.add(a.lower())
+
     if cmd in _DELETE_COMMANDS:
         if cmd == "rm":
-            flags = {a.lower() for a in argv[1:] if a.startswith("-")}
             if flags & _DELETE_FATAL_FLAGS:
                 return argv[0]
             return None  # rm 单文件不带旗标：允许（仍需确认门）
@@ -128,10 +150,23 @@ def execute_command(command: str) -> str:
 
     try:
         # Windows 上保留受控 shell（cmd/powershell 语法无 argv 语义），
-        # 但仍过黑名单 + 超时 + 截断
+        # 但仍过黑名单 + argv 级删除类检查（防 del/q、rd/s 附加开关绕过）+ 超时 + 截断
         use_shell = sys.platform == "win32"
 
         if use_shell:
+            # Windows 分支也做 argv 级检查（shlex 尽力解析引号/空格）
+            try:
+                shell_args = shlex.split(command)
+                argv_danger = _check_dangerous_argv(shell_args)
+                if argv_danger:
+                    logger.warning("拦截危险命令(argv): %s", argv_danger)
+                    return (
+                        f"⛔ 命令已被安全拦截: 检测到危险操作 '{argv_danger}'\n"
+                        f"命令: {command}\n"
+                        f"如确需执行，请手动在终端运行。"
+                    )
+            except ValueError:
+                pass  # shlex 解析失败（引号不闭合等），交由黑名单正则兜底
             result = subprocess.run(
                 command,
                 shell=True,

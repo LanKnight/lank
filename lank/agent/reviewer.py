@@ -63,10 +63,11 @@ class Reviewer:
         if not assistant_msg:
             return
         for tc in assistant_msg.get("tool_calls", []):
-            if tc.get("function", {}).get("name") != "submit_review":
+            func = tc.get("function")
+            if func is None or func.get("name") != "submit_review":
                 continue
             try:
-                args = json.loads(tc["function"].get("arguments") or "{}")
+                args = json.loads(func.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
             try:

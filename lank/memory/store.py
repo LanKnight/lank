@@ -67,8 +67,16 @@ def save_conversation(messages: List[Dict[str, Any]], session_id: Optional[str] 
 
 
 def load_conversation(session_id: str) -> Optional[List[Dict[str, Any]]]:
-    """加载指定会话的历史消息"""
+    """加载指定会话的历史消息（校验路径不越界，防 /resume 路径穿越）"""
+    if not session_id or "/" in session_id or "\\" in session_id or ".." in session_id:
+        return None
     filepath = HISTORY_DIR / f"{session_id}.json"
+    try:
+        resolved = filepath.resolve()
+        if not str(resolved).startswith(str(HISTORY_DIR.resolve())):
+            return None
+    except OSError:
+        return None
     if not filepath.exists():
         return None
     try:
@@ -106,20 +114,41 @@ def list_sessions(days: int = 7) -> List[Dict[str, Any]]:
 
 # ═══════════════ 情景记忆（摘要） ═══════════════
 
+# 进程级 mtime 缓存：避免检索/注入路径反复全量读盘
+_summaries_cache: Optional[Dict[str, Any]] = None
+_summaries_mtime: Optional[float] = None
+_facts_cache: Optional[Dict[str, Any]] = None
+_facts_mtime: Optional[float] = None
+
+
+def _file_mtime(path: Path) -> Optional[float]:
+    try:
+        return path.stat().st_mtime if path.exists() else None
+    except OSError:
+        return None
+
+
 def _load_summaries() -> Dict[str, Any]:
+    global _summaries_cache, _summaries_mtime
+    mtime = _file_mtime(SUMMARIES_FILE)
+    if _summaries_cache is not None and mtime == _summaries_mtime:
+        return _summaries_cache
     if SUMMARIES_FILE.exists():
         try:
             with open(SUMMARIES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return data if isinstance(data, dict) else {}
+            _summaries_cache = data if isinstance(data, dict) else {}
         except (json.JSONDecodeError, IOError, AttributeError):
-            return {}
-    return {}
+            _summaries_cache = {}
+    else:
+        _summaries_cache = {}
+    _summaries_mtime = mtime
+    return _summaries_cache
 
 
 def add_summary(session_id: str, timestamp: str, summary: str,
                 keywords: Optional[List[str]] = None, messages_count: int = 0) -> None:
-    """写入会话摘要（加锁防并发丢更新）"""
+    """写入会话摘要（加锁防并发丢更新；mtime 变化自动刷新缓存）"""
     with _store_lock:
         data = _load_summaries()
         data[session_id] = {
@@ -140,14 +169,21 @@ def load_summaries() -> Dict[str, Any]:
 # ═══════════════ 语义记忆（事实） ═══════════════
 
 def _load_facts() -> Dict[str, Any]:
+    global _facts_cache, _facts_mtime
+    mtime = _file_mtime(FACTS_FILE)
+    if _facts_cache is not None and mtime == _facts_mtime:
+        return _facts_cache
     if FACTS_FILE.exists():
         try:
             with open(FACTS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return data if isinstance(data, dict) else {}
+            _facts_cache = data if isinstance(data, dict) else {}
         except (json.JSONDecodeError, IOError, AttributeError):
-            return {}
-    return {}
+            _facts_cache = {}
+    else:
+        _facts_cache = {}
+    _facts_mtime = mtime
+    return _facts_cache
 
 
 def _next_fact_id(facts: Dict[str, Any]) -> str:
@@ -188,13 +224,14 @@ def add_fact(text: str, source: str = "auto", importance: int = 1) -> str:
 
 
 def remove_fact(fact_id: str) -> bool:
-    """删除事实"""
-    facts = _load_facts()
-    if fact_id in facts:
-        del facts[fact_id]
-        atomic_write_json(FACTS_FILE, facts)
-        return True
-    return False
+    """删除事实（加锁防并发丢更新）"""
+    with _store_lock:
+        facts = _load_facts()
+        if fact_id in facts:
+            del facts[fact_id]
+            atomic_write_json(FACTS_FILE, facts)
+            return True
+        return False
 
 
 def load_facts() -> Dict[str, Any]:

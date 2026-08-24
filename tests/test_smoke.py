@@ -101,7 +101,7 @@ class TestAgentLoop(unittest.TestCase):
         from lank.agent.types import StepStatus
 
         class FakeClient:
-            def chat(self, messages, stream=True, on_tool_call=None, on_text=None):
+            def chat(self, messages, stream=True, on_tool_call=None, on_text=None, system_prompt=None):
                 from lank.agent.context import get_current_loop
                 from lank.tools.plan_tools import submit_plan, step_done
                 loop = get_current_loop()
@@ -138,7 +138,7 @@ class TestAgentLoop(unittest.TestCase):
         from lank.agent import AgentLoop
 
         class SimpleClient:
-            def chat(self, messages, stream=True, on_tool_call=None, on_text=None):
+            def chat(self, messages, stream=True, on_tool_call=None, on_text=None, system_prompt=None):
                 if on_text:
                     on_text("你好")
                 return True, "你好", None
@@ -155,7 +155,7 @@ class TestAgentLoop(unittest.TestCase):
         from lank.agent import AgentLoop, AgentCallbacks
 
         class FakeClient:
-            def chat(self, messages, stream=True, on_tool_call=None, on_text=None):
+            def chat(self, messages, stream=True, on_tool_call=None, on_text=None, system_prompt=None):
                 from lank.agent.context import get_current_loop
                 from lank.tools.plan_tools import submit_plan
                 loop = get_current_loop()
@@ -236,7 +236,7 @@ class TestChatApp(unittest.TestCase):
         self.assertIn("未知命令", texts)
 
     def test_scroll_anchor(self):
-        """cursor 锚定滚动：回看时锚点行上移，新消息重置回底部"""
+        """cursor 锚定滚动：回看时锚点行上移，新消息不打断回看、底部时自动跟随"""
         app = self._make_app()
         for i in range(6):
             app._add_message("user" if i % 2 == 0 else "assistant", f"消息 {i} 内容")
@@ -247,9 +247,15 @@ class TestChatApp(unittest.TestCase):
         top_y = app._get_cursor_position().y
         self.assertLess(top_y, bottom_y)          # 回看：锚点移向顶部
         self.assertEqual(top_y, 0)                # 回看够多 → 顶部
+
         app._add_message("system", "新消息")
-        self.assertEqual(app._back_lines, 0)      # 新消息：重置回底部
-        self.assertGreater(app._get_cursor_position().y, bottom_y)  # 底部锚点下移
+        self.assertEqual(app._back_lines, 50)     # 回看中：新消息不打断（修复 #6）
+        self.assertEqual(app._get_cursor_position().y, 0)  # 锚点仍在顶部
+
+        app._back_lines = 0                       # 用户回到底部
+        app._add_message("system", "再来一条")
+        self.assertEqual(app._back_lines, 0)      # 底部时自动跟随最新
+        self.assertGreater(app._get_cursor_position().y, bottom_y)
 
     def test_ask_bridge(self):
         """AI 线程提问 ↔ UI 线程回答 桥接"""
@@ -358,7 +364,7 @@ class TestChatApp(unittest.TestCase):
         app.ai_available = True
 
         class FakeClient:
-            def chat(self, messages, stream=True, on_tool_call=None, on_text=None):
+            def chat(self, messages, stream=True, on_tool_call=None, on_text=None, system_prompt=None):
                 from lank.agent.context import get_current_loop
                 from lank.tools.plan_tools import submit_plan, step_done
                 loop = get_current_loop()

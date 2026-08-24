@@ -50,6 +50,7 @@ class Planner:
                 stream=True,
                 on_tool_call=self.on_tool_call,  # 规划阶段危险工具同样走确认
                 on_text=self.on_text,
+                system_prompt=prompt,  # PLAN_PROMPT + 工具描述 + 记忆
             )
         except Exception as e:
             logger.exception("规划请求失败")
