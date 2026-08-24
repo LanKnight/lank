@@ -8,7 +8,7 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .config import get_config, set_config, _looks_like_api_key
+from .config import get_config, get_int, set_config, _looks_like_api_key
 from .logs import get_logger
 from .model_config import (
     DEFAULT_API_BASE,
@@ -320,7 +320,8 @@ class AIClient:
         assistant_msg = choice.message
 
         tool_round = 1
-        while assistant_msg.tool_calls and tool_round < MAX_TOOL_CALL_ROUNDS:
+        max_rounds = get_int("max_tool_rounds", MAX_TOOL_CALL_ROUNDS)
+        while assistant_msg.tool_calls and tool_round < max_rounds:
             tool_round += 1
 
             # ⭐ 必须先把 assistant（含 tool_calls）追加到 messages，
@@ -383,9 +384,9 @@ class AIClient:
             assistant_msg = choice.message
 
         # ── 达到上限但仍需工具调用 → 追加警告，不追加未执行的 tool_calls ──
-        if tool_round >= MAX_TOOL_CALL_ROUNDS and assistant_msg.tool_calls:
+        if tool_round >= max_rounds and assistant_msg.tool_calls:
             warning = (
-                f"⚠️ 已达到最大工具调用轮次 ({MAX_TOOL_CALL_ROUNDS})，"
+                f"⚠️ 已达到最大工具调用轮次 ({max_rounds})，"
                 "请简化你的请求或分步执行。"
             )
             messages.append({"role": "assistant", "content": warning})

@@ -58,8 +58,8 @@ DEFAULT_MODEL_PARAMS: Dict[str, Any] = {
     "presence_penalty": 0.0,  # 主题多样性
 }
 
-# 工具调用循环安全限制
-MAX_TOOL_CALL_ROUNDS = 10    # 单次对话中最多连续工具调用轮数，防止无限循环
+# 工具调用循环安全限制（默认值；运行时可用配置项 max_tool_rounds 覆盖）
+MAX_TOOL_CALL_ROUNDS = 25   # 单次请求中最多连续工具调用轮数，防止无限循环
 
 # ============================================================
 # 系统提示词
