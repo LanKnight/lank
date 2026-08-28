@@ -57,14 +57,19 @@ def print_help():
 
 聊天命令:
   /ai /normal          切换 AI/普通模式 (TUI)
+  /auto                切换自动模式（计划自动确认、审核自动通过）
   /clear               清空对话历史
   /save                保存对话
+  /history             查看历史会话
+  /resume <ID>         恢复历史会话（回滚到之前的聊天记录）
   /stats               显示使用统计
   /theme [名称]        显示/切换主题 (default/dark/cyberpunk/hacker/sunset)
   /model [名称]        显示/切换 AI 模型
   /export [json]       导出对话为 Markdown 或 JSON
   /todo list|add|done|del  管理待办事项
   /update              检查更新
+  PageUp/PageDown      回看历史消息 (Ctrl+Home/Ctrl+End 跳顶/底)
+  exit                 退出程序
 """)
 
 

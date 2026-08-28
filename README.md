@@ -403,6 +403,39 @@ tools/__init__ ──→ file_ops / cmd_exec / system / todo_tools
 
 ---
 
+## 🎓 学习方法（本项目为学习项目）
+
+LANK 是一个**学习项目**——目标是亲手实现一个带 ReAct 框架、记忆系统、全屏终端界面的 AI 助手，深入理解 AI Agent 的工程实现。设计文档 [`docs/design.md`](docs/design.md) 记录了完整的设计与决策过程（先讨论方案、再写代码）。
+
+### 这个项目能学到什么
+
+| 主题 | 对应代码 | 核心知识点 |
+|------|---------|-----------|
+| ReAct Agent 框架 | `lank/agent/` | Plan→Act→Review 状态机、验收标准前置、每步紧凑上下文、迭代控制 |
+| 工具调用（function calling） | `lank/ai_client.py` + `lank/tools/` | OpenAI 工具循环、流式解析、工具注册表模式 |
+| 记忆系统 | `lank/memory/` | 四层记忆、会话总结、画像抽取、关键词加权检索、遗忘策略 |
+| 全屏终端 UI | `lank/tui.py` | prompt_toolkit 全屏应用、输入框固定底部、滚动锚点、线程桥接 |
+| 安全防护 | `lank/tools/cmd_exec.py` + `__init__.py` | 命令黑名单、白名单、确认门（fail-closed）、路径穿越 |
+| 工程实践 | 全部 | 配置缓存、原子写、日志、单元测试、多 agent 代码审查 |
+
+### 建议的学习路径
+
+1. **先读设计文档** `docs/design.md`——理解 ReAct 框架与记忆系统的设计意图、关键决策（分类/规划合并、验收标准前置、检索评分等）
+2. **按下方「代码阅读路线」读源码**——入口 `__main__.py` → `cli.py` → `agent/loop.py` 三步走
+3. **对照 git 提交历史学习演进**——每个 commit 对应一个功能或修复，看一个功能如何从无到有、又如何被审查修复（commit message 都写明了原因）
+4. **动手改**：照 `tools/plan_tools.py` 模板添加一个新工具、改 `agent/prompts.py` 提示词观察行为变化、给记忆检索换一种算法
+5. **跑测试**：`python -m unittest discover -s tests`——22 个冒烟测试覆盖核心逻辑，改代码后先跑测试再验证
+
+### 实际踩过的几个坑（都值得研究）
+
+- **定制提示词从未传给模型**：`chat()` 没透传 `system_prompt` 时，planner/executor 的提示词是死代码——调试 AI 行为前，先确认提示词真的到达了模型
+- **测试全绿但功能是假的**：reviewer 用了不执行工具的 `complete()`，`submit_review` 从未执行，测试 mock 恰好掩盖了真实行为——mock 要贴近真实调用链
+- **prompt_toolkit 滚动**：必须用 cursor 锚定机制，且行数计算要和渲染层用同一套算法（`split_lines`），自己推算行数必然对不上
+- **确认门 fail-open**：无回调时危险工具静默执行——安全默认必须 fail-closed，而不是"有回调才询问"
+- **全屏 UI 的日志**：后台线程的 warning 直接写 stderr 会打花备用屏幕，全屏期间要静默终端日志
+
+---
+
 ## 📖 代码阅读路线
 
 如果你是第一次阅读这个项目的源码，以下是推荐的阅读顺序。

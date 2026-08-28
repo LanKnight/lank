@@ -20,6 +20,17 @@ setup_logging()
 
 FIXED_REPLY = "这个问题很不错，建议问AI"
 
+# rich 颜色名 → prompt_toolkit 颜色（全屏 TUI 主题映射）
+_RICH_TO_PT_COLOR = {
+    "cyan": "#00afff", "magenta": "#ff5faf", "green": "#5fd700",
+    "light_cyan": "#87d7ff", "light_magenta": "#ff87d7", "light_green": "#87ff5f",
+    "bright_cyan": "#00ffff", "bright_magenta": "#ff00ff", "bright_green": "#00ff00",
+    "bright_yellow": "#ffff00", "bright_red": "#ff0000",
+    "blue": "#005faf", "purple": "#af5fff", "gold": "#d7af00", "gold1": "#d7af00",
+    "orange1": "#ff8700", "hot_pink": "#ff5f87", "light_sky_blue": "#87afff",
+    "dark_green": "#005f00", "yellow": "#d7d700", "red": "#ff0000",
+}
+
 try:
     from prompt_toolkit.application import Application
     from prompt_toolkit.buffer import Buffer
@@ -293,12 +304,19 @@ class ChatApp:
                     self._add_message("system",
                                       f"⛔ [步骤 {step.id}] {step.title} 受阻: {step.summary[:80]}")
 
+        def on_review_confirm(verdict):
+            # 用户终审：可交付时让用户确认交付（/auto 模式自动通过）
+            if get_config("auto_mode", False):
+                return True
+            return self.confirm_sync("交付结果是否满意? (y=是 / n=否)")
+
         return AgentCallbacks(
             on_text=on_text,
             on_tool_call=on_tool_call,
             on_plan_render=on_plan_render,
             on_plan_confirm=on_plan_confirm,
             on_review=on_review,
+            on_review_confirm=on_review_confirm,
             on_ask_user=on_ask_user,
             on_step_progress=on_step_progress,
         )
@@ -535,6 +553,7 @@ class ChatApp:
                 from .utils import list_themes, THEMES
                 if cmd_arg and cmd_arg in THEMES:
                     set_config("theme", cmd_arg)
+                    self._build_style()  # 全屏 TUI 重新应用主题配色
                     out.append(f"主题已切换为: {cmd_arg}")
                 else:
                     out.append(list_themes())
@@ -604,6 +623,25 @@ class ChatApp:
 
     # ═══════════════ prompt_toolkit 全屏应用 ═══════════════
 
+    def _build_style(self) -> None:
+        """根据当前主题构建 prompt_toolkit Style（/theme 切换后重新调用）"""
+        from prompt_toolkit.styles import Style
+        from .utils import get_theme
+
+        theme = get_theme()
+
+        def c(name: str, default: str = "#d0d0d0") -> str:
+            return _RICH_TO_PT_COLOR.get(name, default)
+
+        self.style = Style.from_dict({
+            "chat.user": f"fg:{c(theme.get('user_color'))}",
+            "chat.ai": f"fg:{c(theme.get('ai_color'))} bold",
+            "chat.sys": f"fg:{c(theme.get('system_color'))}",
+            "chat.tool": f"fg:{c(theme.get('accent'))}",
+        })
+        if self.app is not None:
+            self.app.style = self.style
+
     def _build_pt(self, output=None) -> None:
         """构建 prompt_toolkit 全屏应用
 
@@ -672,12 +710,7 @@ class ChatApp:
             HSplit([self.message_window, input_row]),
             focused_element=input_window,
         )
-        self.style = Style.from_dict({
-            "chat.user": "fg:#00afff",
-            "chat.ai": "fg:#ff5faf bold",
-            "chat.sys": "fg:#5fd700",
-            "chat.tool": "fg:#d7af00",
-        })
+        self._build_style()
         self.app = Application(
             layout=self.layout,
             key_bindings=kb,
@@ -718,6 +751,13 @@ class ChatApp:
 
         if not self._pt_ok:
             return self._run_fallback()
+
+        # 惰性清理过期记忆（best-effort，30 天前的会话与摘要）
+        try:
+            from .memory import cleanup_old_memories
+            cleanup_old_memories()
+        except Exception:
+            pass
 
         self._build_pt()
 

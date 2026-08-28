@@ -149,4 +149,10 @@ def extract_and_update_profile(
             added += 1
     if added:
         logger.info("画像更新: 新增/合并 %d 条事实", added)
+        # 遗忘策略：抽取后按容量上限淘汰最不重要的事实
+        try:
+            from .forget import prune_facts
+            prune_facts()
+        except Exception:
+            pass
     return added
