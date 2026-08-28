@@ -42,7 +42,11 @@ def ensure_memory_dir() -> None:
 # ═══════════════ 原始会话 ═══════════════
 
 def save_conversation(messages: List[Dict[str, Any]], session_id: Optional[str] = None) -> str:
-    """保存对话历史（原子写；会话内建议复用同一 session_id）"""
+    """保存对话历史（原子写；会话内建议复用同一 session_id）
+
+    /resume 续写场景：目标文件已存在时合并旧消息（保留更早历史），
+    避免"最近 N 条"窗口逐次挤掉头部。
+    """
     if not get_config("memory_enabled", True):
         return ""
 
@@ -51,12 +55,27 @@ def save_conversation(messages: List[Dict[str, Any]], session_id: Optional[str] 
         session_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:4]}"
 
     filepath = HISTORY_DIR / f"{session_id}.json"
+
+    # 合并旧文件中的更早消息（去重：以 role+content 判定）
+    merged = list(messages)
+    if filepath.exists():
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                old_msgs = json.load(f).get("messages", [])
+            seen = {(m.get("role"), m.get("content")) for m in merged}
+            merged = list(old_msgs) + [
+                m for m in messages
+                if (m.get("role"), m.get("content")) not in seen
+            ]
+        except Exception:
+            merged = list(messages)
+
     data = {
         "session_id": session_id,
         "timestamp": datetime.now().isoformat(),
-        "messages": messages[-50:],  # 只保存最近 50 条
+        "messages": merged[-200:],  # 窗口 200，兼顾长会话与文件体积
     }
-    tmp = filepath.with_suffix(".json.tmp")
+    tmp = filepath.with_name(f"{filepath.name}.{uuid.uuid4().hex[:6]}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

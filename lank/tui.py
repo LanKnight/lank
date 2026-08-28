@@ -61,6 +61,7 @@ class ChatApp:
         self._back_lines = 0      # 回看行数（0=底部），PageUp/PageDown 调整
         self._ai_running = False  # 单一 AI 运行互斥（防止并发线程踩踏）
         self._finalized_sessions = set()  # 已做过会话总结的 session（防重复 LLM 调用）
+        self._last_stream_invalidate = 0.0  # 流式输出节流：上次刷新时间戳
         self._lock = threading.Lock()
 
         # prompt_toolkit 组件（PT_AVAILABLE 时创建）
@@ -222,10 +223,14 @@ class ChatApp:
         from .agent import AgentCallbacks
 
         def on_text(text: str) -> None:
-            # 只 append 片段，渲染时 join（避免逐 token 字符串累加的 O(n²)）
+            # 只 append 片段，渲染时 join（避免逐 token 字符串累加的 O(n²)）；
+            # 渲染节流：最多每 50ms 刷新一次，长回复显著降 CPU，最终由消息追加补齐
             with self._lock:
                 self._streamed_parts.append(text)
-            self._invalidate()
+            now = time.monotonic()
+            if now - self._last_stream_invalidate >= 0.05:
+                self._last_stream_invalidate = now
+                self._invalidate()
 
         def on_tool_call(name, args, result=None):
             if result is None:
