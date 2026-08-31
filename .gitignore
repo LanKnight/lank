@@ -46,6 +46,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+lank_task_progress.md
 
 # User configuration (contains user-specific paths)
 .lank/config.json

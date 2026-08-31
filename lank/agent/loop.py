@@ -106,9 +106,8 @@ class AgentLoop:
             for round_idx in range(max_review + 1):
                 executor.execute_plan(plan)
 
-                if not all(s.status == StepStatus.DONE for s in plan.steps):
-                    break  # 存在 blocked 步骤，无法继续
-
+                # 有 blocked 步骤也进入 review（断点续传）：
+                # 让审核基于 blocked 步骤的产出/受阻原因，决定补哪些新步骤
                 verdict = reviewer.review(plan)
                 if verdict is None:
                     # 审核失败（模型未提交判定）：告知用户后按当前结果交付

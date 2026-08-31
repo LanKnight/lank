@@ -46,7 +46,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "auto_mode": False,             # True 时计划自动确认、review 自动通过（全自动）
     "max_plan_steps": 10,           # 单计划最大步骤数
     "max_review_rounds": 3,         # review 未达标最大迭代轮数
-    "max_tool_rounds": 25,          # 单次请求中最多连续工具调用轮数（防止无限循环）
+    "max_tool_rounds": 60,          # 单次请求中最多连续工具调用轮数（防止无限循环）
     "plan_prompt": "",              # 覆盖 PLAN_PROMPT
     "exec_prompt": "",              # 覆盖 EXEC_PROMPT
     "review_prompt": "",            # 覆盖 REVIEW_PROMPT
