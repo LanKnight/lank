@@ -54,12 +54,14 @@ class AgentLoop:
             return 1
         return max((s.id for s in self.plan.steps), default=0) + 1
 
-    def run(self, user_input: str, memory_text: str = "") -> AgentResult:
+    def run(self, user_input: str, memory_text: str = "",
+            history: Optional[List[Dict[str, Any]]] = None) -> AgentResult:
         """执行一次完整的 plan → act → review 流程
 
         Args:
             user_input: 用户输入
             memory_text: 注入的记忆上下文（由调用方构建，可选）
+            history: 之前的对话历史（让规划阶段理解多轮上下文，可选）
 
         Returns:
             AgentResult
@@ -73,7 +75,7 @@ class AgentLoop:
                 on_text=self.callbacks.on_text,
                 on_tool_call=self.callbacks.on_tool_call,
             )
-            success, answer, plan = planner.plan_or_answer(user_input)
+            success, answer, plan = planner.plan_or_answer(user_input, history=history)
             if not success:
                 return AgentResult(False, answer, phase=AgentPhase.DONE)
             if plan is None:

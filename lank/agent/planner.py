@@ -7,7 +7,7 @@ agent/planner.py - PLAN 阶段（design.md §5.1-§5.2）
 零额外往返，利用原生 function calling 保证结构化输出。
 """
 
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..config import get_config, get_int
 from ..logs import get_logger
@@ -37,13 +37,27 @@ class Planner:
             - plan 为 None 时，answer 是直接回答（简单问答，已流式输出）
             - plan 非 None 时，进入 PLAN 阶段
         """
+    def plan_or_answer(self, user_input: str,
+                       history: Optional[List[Dict[str, Any]]] = None) -> Tuple[bool, str, Optional[Plan]]:
+        """分类 + 规划
+
+        Args:
+            user_input: 当前用户输入
+            history: 之前的对话历史（user/assistant 交替，让模型理解上下文）
+
+        Returns:
+            (success, answer_or_error, plan)
+            - plan 为 None 时，answer 是直接回答（简单问答，已流式输出）
+            - plan 非 None 时，进入 PLAN 阶段
+        """
         max_steps = get_int("max_plan_steps", 10)
         plan_prompt = get_plan_prompt(max_steps)
         prompt = plan_prompt + "\n\n" + get_tool_descriptions()
         if self.memory_text:
             prompt += "\n\n" + self.memory_text
 
-        messages = [{"role": "user", "content": user_input}]
+        messages = list(history or [])[-20:]
+        messages.append({"role": "user", "content": user_input})
         try:
             success, content, _ = self.client.chat(
                 messages=messages,

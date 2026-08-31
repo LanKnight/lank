@@ -336,7 +336,9 @@ class ChatApp:
             with self._lock:
                 self._streamed_parts = []
 
-            result = loop.run(user_input, memory_text=memory_text)
+            # 传对话历史（排除本轮刚 append 的 user 消息，planner 会重新加）
+            result = loop.run(user_input, memory_text=memory_text,
+                              history=list(self.ai_history[:-1][-20:]))
 
             with self._lock:
                 if result.plan is None:
