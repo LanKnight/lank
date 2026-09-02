@@ -58,6 +58,7 @@ def print_help():
 聊天命令:
   /ai /normal          切换 AI/普通模式 (TUI)
   /auto                切换自动模式（计划自动确认、审核自动通过）
+  /test                切换测试模式（工具免确认，危险命令仍拦截）
   /clear               清空对话历史
   /save                保存对话
   /history             查看历史会话

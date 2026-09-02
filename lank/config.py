@@ -44,6 +44,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_history": 100,
     # ── v0.3.0：ReAct 框架 ──
     "auto_mode": False,             # True 时计划自动确认、review 自动通过（全自动）
+    "test_mode": False,             # 测试/演示模式：工具免确认（危险命令黑名单仍拦截）、计划终审自动通过
     "max_plan_steps": 10,           # 单计划最大步骤数
     "max_review_rounds": 3,         # review 未达标最大迭代轮数
     "max_tool_rounds": 60,          # 单次请求中最多连续工具调用轮数（防止无限循环）

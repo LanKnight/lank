@@ -347,7 +347,8 @@ class AIClient:
                     func_args = {}
 
                 hint = str(func_args.get("command", "")) if func_name == "execute_command" else ""
-                if needs_confirmation(func_name, hint) and self.safe_mode:
+                if needs_confirmation(func_name, hint) and self.safe_mode \
+                        and not get_config("test_mode", False):
                     if on_tool_call:
                         proceed = on_tool_call(func_name, func_args)
                         if not proceed:
@@ -470,7 +471,8 @@ class AIClient:
                     func_args = {}
 
                 hint = str(func_args.get("command", "")) if func_name == "execute_command" else ""
-                if needs_confirmation(func_name, hint) and self.safe_mode:
+                if needs_confirmation(func_name, hint) and self.safe_mode \
+                        and not get_config("test_mode", False):
                     if on_tool_call:
                         proceed = on_tool_call(func_name, func_args)
                         if not proceed:

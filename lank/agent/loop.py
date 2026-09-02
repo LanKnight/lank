@@ -89,7 +89,8 @@ class AgentLoop:
             if self.callbacks.on_plan_render:
                 self.callbacks.on_plan_render(plan)
             confirmed = True
-            auto = bool(get_config("auto_mode", False))
+            # 自动模式或测试模式：计划/终审自动通过
+            auto = bool(get_config("auto_mode", False)) or bool(get_config("test_mode", False))
             if not auto and self.callbacks.on_plan_confirm:
                 confirmed = self.callbacks.on_plan_confirm(plan)
             if not confirmed:

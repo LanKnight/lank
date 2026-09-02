@@ -164,6 +164,8 @@ class ChatApp:
         if self._pending_ask is not None:
             return FormattedText([("class:chat.sys", ">> ")])
         mode = "🤖 AI" if self.ai_mode else "💬 普通"
+        if get_config("test_mode", False):
+            mode = f"{mode}·🧪测试"
         return FormattedText([("class:chat.sys", f"[{mode}] ")])
 
     def _scroll_to_bottom(self) -> None:
@@ -460,6 +462,12 @@ class ChatApp:
                 out.append(f"自动模式已{'开启' if new_val else '关闭'}（计划自动确认、审核自动通过）")
             else:
                 out.append("⚠️ 自动模式保存失败")
+        elif cmd == "/test":
+            new_val = not get_config("test_mode", False)
+            if set_config("test_mode", new_val):
+                out.append(f"测试模式已{'开启' if new_val else '关闭'}（工具免确认，危险命令仍拦截，计划终审自动通过）")
+            else:
+                out.append("⚠️ 测试模式保存失败")
         elif cmd == "/clear":
             with self._lock:
                 if self._ai_running:
@@ -522,6 +530,7 @@ class ChatApp:
   /ai       切换到 AI 智能模式
   /normal   切换到普通聊天模式
   /auto     切换自动模式（计划自动确认、审核自动通过）
+  /test     切换测试模式（工具免确认，危险命令仍拦截）
   /clear    清空对话
   /save     保存对话
   /history  查看历史会话
