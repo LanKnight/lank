@@ -176,12 +176,11 @@ def _validate_arguments(info: Dict[str, Any], arguments: Dict[str, Any]) -> Opti
 
 
 def _truncate_result(result: str, limit: Optional[int] = None) -> str:
-    """工具结果截断（防止上下文爆炸）"""
+    """工具结果截断（首尾保留，防止上下文爆炸且不错过结尾关键信息）"""
+    from ..utils import smart_truncate
     if limit is None:
-        limit = int(get_config("tool_output_limit", 8192))
-    if len(result) > limit:
-        return result[:limit] + f"\n... [已截断，共 {len(result)} 字符]"
-    return result
+        limit = int(get_config("tool_output_limit", 4096))
+    return smart_truncate(result, limit)
 
 
 def execute_tool(name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:

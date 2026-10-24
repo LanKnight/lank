@@ -71,6 +71,56 @@ class TestUtils(unittest.TestCase):
         h = [{"role": "user", "content": str(i)} for i in range(120)]
         self.assertEqual(len(trim_history(h, 100)), 100)
 
+    def test_smart_truncate_keeps_head_and_tail(self):
+        """首尾截断：超长时保留开头+结尾、不超预算；短文本原样返回"""
+        from lank.utils import smart_truncate
+        text = "H" * 100 + "M" * 2000 + "T" * 100
+        out = smart_truncate(text, 200)
+        self.assertLessEqual(len(out), 200)
+        self.assertTrue(out.startswith("HHHH"))       # 保留开头
+        self.assertTrue(out.endswith("TTTT"))         # 保留结尾（错误/退出信息常在尾部）
+        self.assertIn("已截断", out)
+        self.assertEqual(smart_truncate("abc", 100), "abc")   # 未超预算不截
+        self.assertEqual(smart_truncate("abc", 0), "abc")     # limit<=0 不截
+
+
+class TestUsage(unittest.TestCase):
+    """token 用量累加（不联网，构造假响应对象）"""
+
+    def _mk_client(self):
+        from lank.ai_client import AIClient
+        return AIClient()
+
+    def test_record_usage_from_response(self):
+        c = self._mk_client()
+
+        class Usage:
+            prompt_tokens = 10
+            completion_tokens = 5
+            total_tokens = 15
+
+        class Resp:
+            usage = Usage()
+
+        c._record_usage(Resp())
+        c._record_usage_dict({"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3})
+        self.assertEqual(c.total_prompt_tokens, 11)
+        self.assertEqual(c.total_completion_tokens, 7)
+        self.assertEqual(c.total_tokens, 18)
+        self.assertEqual(c.total_api_calls, 2)
+        self.assertIn("18", c.usage_summary())
+
+    def test_record_usage_safe_when_absent(self):
+        c = self._mk_client()
+
+        class Resp:
+            usage = None
+
+        c._record_usage(Resp())          # 无 usage 不应报错也不累加
+        c._record_usage_dict(None)
+        self.assertEqual(c.total_tokens, 0)
+        self.assertEqual(c.total_api_calls, 0)
+
 
 class TestAgentTypes(unittest.TestCase):
     def test_plan_roundtrip(self):

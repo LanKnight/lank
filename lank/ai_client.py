@@ -73,21 +73,31 @@ def _safe_display_url(url: str) -> str:
 def _accumulate_stream(
     stream_response: Any,
     on_text: Optional[Callable] = None,
-) -> Tuple[str, List[Dict[str, Any]]]:
-    """消费 OpenAI 流式响应，实时回调 on_text，返回 (完整内容, 工具调用列表)
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, int]]:
+    """消费 OpenAI 流式响应，实时回调 on_text，返回 (完整内容, 工具调用列表, usage)
 
     Args:
         stream_response: OpenAI SDK 返回的流式迭代器
         on_text: 每次收到文本增量时调用 on_text(delta_str)
 
     Returns:
-        (完整文本, tool_calls 列表，格式为 API 消息 dict)
+        (完整文本, tool_calls 列表，格式为 API 消息 dict, usage dict)
+        usage: 防御性读取 chunk.usage（部分供应商在末 chunk 携带）；无则为空 dict。
     """
     content_parts: List[str] = []
+    usage: Dict[str, int] = {}
     # 按 index 累积 tool call 片段
     tc_buf: Dict[int, Dict[str, Any]] = {}
 
     for chunk in stream_response:
+        # 末尾 chunk 可能携带 usage（未请 stream_options 时通常为空，安全忽略）
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            usage = {
+                "prompt_tokens": getattr(chunk_usage, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(chunk_usage, "completion_tokens", 0) or 0,
+                "total_tokens": getattr(chunk_usage, "total_tokens", 0) or 0,
+            }
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta is None:
             continue
@@ -128,7 +138,7 @@ def _accumulate_stream(
                 },
             })
 
-    return "".join(content_parts), tool_calls
+    return "".join(content_parts), tool_calls, usage
 
 
 # ── AIClient ──
@@ -175,8 +185,57 @@ class AIClient:
         self.user_name = get_config("user_name", "用户")
         self.safe_mode = get_config("safe_mode", True)
 
+        # ── token 用量累加（生产级 Agent 标配：让成本可观测）──
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_tokens = 0
+        self.total_api_calls = 0
+        self.last_usage: Dict[str, int] = {}
+
         self.client = None
         self._init_client()
+
+    # ── token 用量采集 ──
+
+    def _record_usage_dict(self, usage: Optional[Dict[str, Any]]) -> None:
+        """累加一次响应的 token 用量（usage 为 dict 或 None）"""
+        if not usage:
+            return
+        p = int(usage.get("prompt_tokens", 0) or 0)
+        c = int(usage.get("completion_tokens", 0) or 0)
+        t = int(usage.get("total_tokens", 0) or (p + c))
+        self.total_prompt_tokens += p
+        self.total_completion_tokens += c
+        self.total_tokens += t
+        self.total_api_calls += 1
+        self.last_usage = {"prompt_tokens": p, "completion_tokens": c, "total_tokens": t}
+
+    def _record_usage(self, response: Any) -> None:
+        """从 OpenAI 响应对象读取 usage 并累加（无 usage 时静默跳过）"""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        self._record_usage_dict({
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+            "completion_tokens": getattr(usage, "completion_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        })
+
+    def usage_summary(self) -> str:
+        """本次进程累计 token 用量的可读摘要"""
+        return (
+            f"API 调用 {self.total_api_calls} 次，"
+            f"token: 输入 {self.total_prompt_tokens:,} / "
+            f"输出 {self.total_completion_tokens:,} / 合计 {self.total_tokens:,}"
+        )
+
+    def reset_usage(self) -> None:
+        """清零用量计数（供按任务统计）"""
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_tokens = 0
+        self.total_api_calls = 0
+        self.last_usage = {}
 
     def _init_client(self) -> None:
         """初始化 OpenAI 客户端"""
@@ -318,6 +377,7 @@ class AIClient:
         """
         # 发送当前 messages（含首轮 tool_calls + tool results）获取下一轮响应
         response = self._create_completion([system_msg] + messages, stream=False)
+        self._record_usage(response)
         choice = response.choices[0]
         assistant_msg = choice.message
 
@@ -383,6 +443,7 @@ class AIClient:
 
             # 继续获取下一轮
             response = self._create_completion([system_msg] + messages, stream=False)
+            self._record_usage(response)
             choice = response.choices[0]
             assistant_msg = choice.message
 
@@ -439,11 +500,13 @@ class AIClient:
                 stream_resp = self._create_completion(
                     [system_msg] + messages, stream=True,
                 )
-                content, tool_calls = _accumulate_stream(stream_resp, on_text=on_text)
+                content, tool_calls, usage = _accumulate_stream(stream_resp, on_text=on_text)
+                self._record_usage_dict(usage)
             else:
                 response = self._create_completion(
                     [system_msg] + messages, stream=False,
                 )
+                self._record_usage(response)
                 choice = response.choices[0]
                 assistant_msg = choice.message
                 content = assistant_msg.content or ""
@@ -567,6 +630,7 @@ class AIClient:
                 [system_msg] + messages, stream=False,
                 timeout=timeout, retry=retry,
             )
+            self._record_usage(response)
             assistant_msg = response.choices[0].message
             content = assistant_msg.content or ""
             entry: Dict[str, Any] = {"role": "assistant", "content": content}

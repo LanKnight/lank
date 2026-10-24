@@ -115,12 +115,11 @@ def _check_dangerous_argv(argv: List[str]) -> Optional[str]:
 
 
 def _truncate(text: str, limit: Optional[int] = None) -> str:
-    """截断输出"""
+    """截断输出（首尾保留：报错/退出信息常在结尾）"""
+    from ..utils import smart_truncate
     if limit is None:
-        limit = int(get_config("cmd_output_limit", 20480))
-    if len(text) > limit:
-        return text[:limit] + f"\n... [已截断，共 {len(text)} 字符]"
-    return text
+        limit = int(get_config("cmd_output_limit", 6144))
+    return smart_truncate(text, limit)
 
 
 def execute_command(command: str) -> str:

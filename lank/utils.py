@@ -103,6 +103,28 @@ def get_theme() -> Dict[str, str]:
     return THEMES.get(theme_name, THEMES["default"])
 
 
+def smart_truncate(text: str, limit: int, keep_ratio: float = 0.6) -> str:
+    """首尾截断（成熟 Agent 的标配做法）
+
+    命令/工具输出超预算时，错误信息、退出码、结论往往在**结尾**；纯截头会丢掉
+    关键信号。改为保留开头 + 结尾、丢弃中间，同等 token 预算下信息密度更高。
+    返回值长度不超过 limit。
+    """
+    if not isinstance(text, str):
+        return text
+    if limit <= 0 or len(text) <= limit:
+        return text
+    note = f"\n... [已截断：共 {len(text)} 字符，保留首尾]\n"
+    budget = limit - len(note)
+    if budget <= 0:
+        return text[:limit]
+    head = int(budget * keep_ratio)
+    tail = budget - head
+    if tail <= 0:
+        return text[:head] + note
+    return text[:head] + note + text[-tail:]
+
+
 def trim_history(history: List[Dict[str, Any]], limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """会话滑动窗口：防止长会话上下文无限增长（优化清单 #上下文）"""
     if limit is None:
@@ -137,6 +159,9 @@ def _load_stats() -> Dict[str, Any]:
         "total_sessions": 0,
         "total_messages": 0,
         "total_tool_calls": 0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "total_tokens": 0,
         "daily_stats": {},
     }
 
@@ -167,6 +192,28 @@ def record_session(messages_count: int, tool_calls: int = 0) -> None:
     _save_stats(stats)
 
 
+def record_token_usage(prompt_tokens: int, completion_tokens: int,
+                        total_tokens: Optional[int] = None) -> None:
+    """累加并落盘 token 用量（来自 API 响应的 usage）"""
+    prompt_tokens = int(prompt_tokens or 0)
+    completion_tokens = int(completion_tokens or 0)
+    if total_tokens is None:
+        total_tokens = prompt_tokens + completion_tokens
+    total_tokens = int(total_tokens or 0)
+    if total_tokens <= 0:
+        return
+    stats = _load_stats()
+    stats["total_prompt_tokens"] = stats.get("total_prompt_tokens", 0) + prompt_tokens
+    stats["total_completion_tokens"] = stats.get("total_completion_tokens", 0) + completion_tokens
+    stats["total_tokens"] = stats.get("total_tokens", 0) + total_tokens
+    today = datetime.now().strftime("%Y-%m-%d")
+    day = stats.setdefault("daily_stats", {}).setdefault(
+        today, {"sessions": 0, "messages": 0, "tool_calls": 0}
+    )
+    day["tokens"] = day.get("tokens", 0) + total_tokens
+    _save_stats(stats)
+
+
 def get_stats_summary() -> str:
     """获取统计摘要"""
     stats = _load_stats()
@@ -183,8 +230,15 @@ def get_stats_summary() -> str:
         f"总会话数: {total_sessions}",
         f"总消息数: {total_messages}",
         f"工具调用: {total_tool_calls}",
-        "",
     ]
+
+    total_tokens = stats.get("total_tokens", 0)
+    if total_tokens:
+        lines.append(
+            f"Token 用量: 输入 {stats.get('total_prompt_tokens', 0):,} / "
+            f"输出 {stats.get('total_completion_tokens', 0):,} / 合计 {total_tokens:,}"
+        )
+    lines.append("")
     
     # 最近 7 天统计
     daily = stats.get("daily_stats", {})
