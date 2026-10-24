@@ -19,6 +19,7 @@ from .store import (
     HISTORY_DIR,
     PROFILE_FILE,
     add_fact,
+    add_procedure,
     add_summary,
     aggregate_profile,
     ensure_memory_dir,
@@ -27,8 +28,10 @@ from .store import (
     list_sessions,
     load_conversation,
     load_facts,
+    load_procedures,
     load_summaries,
     remove_fact,
+    remove_procedure,
     save_conversation,
     update_profile,
 )
@@ -36,6 +39,7 @@ from .retriever import (
     get_relevant_context,
     search_facts,
     search_memories,
+    search_procedures,
     search_summaries,
 )
 from .summarizer import (
@@ -62,6 +66,9 @@ __all__ = [
     "update_profile",
     "add_fact",
     "remove_fact",
+    "add_procedure",
+    "remove_procedure",
+    "load_procedures",
     "load_facts",
     "load_summaries",
     "add_summary",
@@ -75,6 +82,7 @@ __all__ = [
     "search_memories",
     "search_summaries",
     "search_facts",
+    "search_procedures",
     # summarizer
     "finalize_session",
     "needs_rollup",

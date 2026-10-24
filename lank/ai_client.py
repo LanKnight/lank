@@ -68,6 +68,23 @@ def _safe_display_url(url: str) -> str:
     return url
 
 
+def _messages_char_len(messages: List[Dict[str, Any]]) -> int:
+    """估算消息列表的字符总量（含 content 与 tool_calls 参数）。
+
+    纯函数、零依赖，用于单步上下文预算护栏（防止工具结果在多轮循环中
+    无界累积成一枚 token 炸弹）。以字符数近似 token，保守且可离线单测。
+    """
+    total = 0
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        for tc in m.get("tool_calls", []) or []:
+            func = tc.get("function", {}) if isinstance(tc, dict) else {}
+            total += len(str(func.get("name", ""))) + len(str(func.get("arguments", "")))
+    return total
+
+
 # ── 流式响应工具函数 ──
 
 def _accumulate_stream(
@@ -442,6 +459,16 @@ class AIClient:
                 })
 
             # 继续获取下一轮
+            # ── 稳健性护栏：单步上下文字符预算超限则早停，防 token 炸弹 ──
+            budget = int(get_config("max_step_context_chars", 120000))
+            if budget > 0 and _messages_char_len([system_msg] + messages) > budget:
+                warning = (
+                    f"⚠️ 单步上下文已达字符预算上限 ({budget})，"
+                    "提前结束工具循环以避免超额消耗，请缩小任务范围或分批处理。"
+                )
+                messages.append({"role": "assistant", "content": warning})
+                return warning, messages
+
             response = self._create_completion([system_msg] + messages, stream=False)
             self._record_usage(response)
             choice = response.choices[0]

@@ -122,6 +122,42 @@ class TestUsage(unittest.TestCase):
         self.assertEqual(c.total_api_calls, 0)
 
 
+class TestVector(unittest.TestCase):
+    """可选向量后端：纯函数 + 默认降级（不依赖模型）"""
+
+    def test_cosine(self):
+        from lank.memory.vector import cosine
+        self.assertAlmostEqual(cosine([1, 0], [1, 0]), 1.0)
+        self.assertAlmostEqual(cosine([1, 0], [0, 1]), 0.0)
+        self.assertEqual(cosine([], [1.0]), 0.0)        # 空向量
+        self.assertEqual(cosine([0, 0], [1, 1]), 0.0)   # 零向量
+        self.assertEqual(cosine([1, 2], [1]), 0.0)      # 长度不等
+
+    def test_embed_disabled_returns_none(self):
+        from unittest import mock
+        import lank.memory.vector as v
+        with mock.patch.object(v, "get_config", lambda k, d=None: False):
+            self.assertIsNone(v.embed(["hello"]))
+            self.assertFalse(v.enabled())
+
+
+class TestStepBudget(unittest.TestCase):
+    """单步上下文字符预算护栏（纯函数）"""
+
+    def test_messages_char_len(self):
+        from lank.ai_client import _messages_char_len
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "read_file", "arguments": '{"path":"a"}'}}]},
+        ]
+        self.assertEqual(
+            _messages_char_len(msgs),
+            5 + len("read_file") + len('{"path":"a"}'),
+        )
+        self.assertEqual(_messages_char_len([]), 0)
+
+
 class TestAgentTypes(unittest.TestCase):
     def test_plan_roundtrip(self):
         from lank.agent import Plan, Step
@@ -254,6 +290,12 @@ class TestMemory(unittest.TestCase):
         ms.SUMMARIES_FILE = self.tmp / "summaries.json"
         ms.FACTS_FILE = self.tmp / "facts.json"
         ms.PROFILE_FILE = self.tmp / "profile.json"
+        ms.PROCEDURES_FILE = self.tmp / "procedures.json"
+        # 重置进程内缓存，避免跨用例污染
+        ms._facts_cache = None
+        ms._facts_mtime = None
+        ms._procs_cache = None
+        ms._procs_mtime = None
         ms.ensure_memory_dir()
         import lank.memory.forget as mf
         mf.HISTORY_DIR = ms.HISTORY_DIR
@@ -323,6 +365,61 @@ class TestMemory(unittest.TestCase):
         self.assertEqual(n, 0)  # 无原始会话文件
         from lank.memory.store import load_summaries
         self.assertNotIn("old", load_summaries())
+
+    def test_add_fact_near_dedup_merge(self):
+        """近似去重：同义改写合并为一条，累加提及次数/取更高重要性/显式源优先"""
+        fid1 = self.ms.add_fact("用户住在北京市", source="auto", importance=1)
+        fid2 = self.ms.add_fact("用户住在北京市里", source="explicit", importance=2)
+        self.assertEqual(fid1, fid2)
+        facts = self.ms.load_facts()
+        self.assertEqual(len(facts), 1)
+        e = facts[fid1]
+        self.assertEqual(e["mention_count"], 2)
+        self.assertEqual(e["source"], "explicit")
+        self.assertEqual(e["importance"], 2)
+
+    def test_procedure_add_merge_remove(self):
+        """程序性记忆：新增/目标近似重复合并(复用次数+)/删除"""
+        steps = [{"title": "读取数据", "action": "read_file", "acceptance": "得到表格"}]
+        pid = self.ms.add_procedure("分析葡萄酒评分", steps)
+        self.assertTrue(pid)
+        pid2 = self.ms.add_procedure("分析葡萄酒评分", steps)
+        self.assertEqual(pid, pid2)
+        self.assertEqual(self.ms.load_procedures()[pid]["use_count"], 2)
+        self.assertTrue(self.ms.remove_procedure(pid))
+        self.assertNotIn(pid, self.ms.load_procedures())
+
+    def test_search_procedures_and_inject(self):
+        """检索可复用流程，并在有查询时注入“可复用流程”段"""
+        steps = [{"title": "解析评分表", "action": "read", "acceptance": "ok"},
+                 {"title": "生成图表", "action": "plot", "acceptance": "ok"}]
+        self.ms.add_procedure("葡萄酒盲测分析", steps)
+        from lank.memory import search_procedures
+        r = search_procedures("葡萄酒 分析")
+        self.assertTrue(r)
+        self.assertEqual(r[0]["kind"], "procedure")
+        from lank.memory.retriever import get_relevant_context
+        self.assertIn("可复用流程", get_relevant_context("葡萄酒 分析"))
+        # 空查询不注入流程段
+        self.assertNotIn("可复用流程", get_relevant_context(""))
+
+    def test_record_procedure_on_success(self):
+        """成功计划沉淀程序记忆；无 DONE 步骤不沉淀"""
+        from lank.agent import AgentLoop
+        from lank.agent.types import Plan, Step, StepStatus
+        loop = AgentLoop(client=None)
+        plan = Plan(goal="完成报表汇总", steps=[
+            Step(id=1, title="读取", action="read", acceptance="ok", status=StepStatus.DONE),
+            Step(id=2, title="汇总", action="sum", acceptance="ok", status=StepStatus.DONE),
+        ], review_criteria="ok")
+        loop._record_procedure(plan)
+        self.assertTrue(self.ms.load_procedures())
+        n = len(self.ms.load_procedures())
+        plan2 = Plan(goal="失败任务", steps=[
+            Step(id=1, title="x", action="y", acceptance="z", status=StepStatus.BLOCKED)],
+            review_criteria="")
+        loop._record_procedure(plan2)
+        self.assertEqual(len(self.ms.load_procedures()), n)
 
 
 class TestChatApp(unittest.TestCase):
@@ -446,6 +543,37 @@ class TestChatApp(unittest.TestCase):
         app._handle_command("/resume nonexist_session_xyz")
         texts = [t for _, t in app.messages]
         self.assertTrue(any("未找到会话" in t for t in texts))
+
+    def test_memory_command(self):
+        """/memory list/search/forget 子命令"""
+        import lank.memory.store as ms
+        tmp = Path(".test_cmd_mem")
+        shutil.rmtree(tmp, ignore_errors=True)
+        ms.MEMORY_DIR = tmp
+        ms.HISTORY_DIR = tmp / "history"
+        ms.SUMMARIES_FILE = tmp / "summaries.json"
+        ms.FACTS_FILE = tmp / "facts.json"
+        ms.PROFILE_FILE = tmp / "profile.json"
+        ms.PROCEDURES_FILE = tmp / "procedures.json"
+        ms._facts_cache = None
+        ms._facts_mtime = None
+        ms._procs_cache = None
+        ms._procs_mtime = None
+        ms.ensure_memory_dir()
+        try:
+            fid = ms.add_fact("测试记忆事实 ABC", source="explicit")
+            app = self._make_app()
+            app._handle_command("/memory list")
+            texts = " ".join(t for _, t in app.messages)
+            self.assertIn("记忆总览", texts)
+            self.assertIn(fid, texts)
+            app._handle_command("/memory search ABC")
+            texts = " ".join(t for _, t in app.messages)
+            self.assertIn("测试记忆事实", texts)
+            app._handle_command("/memory forget " + fid)
+            self.assertNotIn(fid, ms.load_facts())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_confirm_bridge(self):
         import threading

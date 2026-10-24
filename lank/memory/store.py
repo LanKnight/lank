@@ -11,6 +11,7 @@ memory/store.py - 记忆持久化层（design.md §8）
 
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import datetime, timedelta
@@ -28,6 +29,7 @@ HISTORY_DIR = MEMORY_DIR / "history"
 SUMMARIES_FILE = MEMORY_DIR / "summaries.json"
 FACTS_FILE = MEMORY_DIR / "facts.json"
 PROFILE_FILE = MEMORY_DIR / "profile.json"
+PROCEDURES_FILE = MEMORY_DIR / "procedures.json"   # 程序性记忆：可复用的工作流/步骤模式
 
 # 同进程线程安全（读-改-写路径加锁，防并发丢更新/撞 id）
 _store_lock = threading.Lock()
@@ -217,18 +219,58 @@ def _next_fact_id(facts: Dict[str, Any]) -> str:
     return f"fact_{max_n + 1}"
 
 
+_FACT_WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
+
+
+def _norm_tokens(text: str) -> set:
+    """归一化分词：英文词 + 中文 2-gram（用于近似去重，不依赖外部库）"""
+    tokens = set(_FACT_WORD_RE.findall((text or "").lower()))
+    cjk = "".join(re.findall(r"[\u4e00-\u9fff]", text or ""))
+    if len(cjk) >= 2:
+        tokens.update(cjk[i:i + 2] for i in range(len(cjk) - 1))
+    return tokens
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    union = len(a | b)
+    return len(a & b) / union if union else 0.0
+
+
 def add_fact(text: str, source: str = "auto", importance: int = 1) -> str:
-    """写入事实（同文本合并，更新提及次数；加锁防并发撞 id）"""
+    """写入事实（近似去重：相似度达阈则合并而非新增；加锁防并发撞 id）
+
+    旧版仅按整串相等去重，同义改写会不断堆积。现改为基于词元 Jaccard
+    相似度合并：命中则累加提及次数/取更高重要性，显式来源优先保留。
+    """
     with _store_lock:
         facts = _load_facts()
         now = datetime.now().isoformat()
+        threshold = float(get_config("memory_dedup_similarity", 0.85) or 0.85)
+        new_tokens = _norm_tokens(text)
+
+        matched_id: Optional[str] = None
         for fid, f in facts.items():
-            if isinstance(f, dict) and f.get("text", "").strip() == text.strip():
-                f["mention_count"] = f.get("mention_count", 1) + 1
-                f["importance"] = max(f.get("importance", 1), importance)
-                f["updated_at"] = now
-                atomic_write_json(FACTS_FILE, facts)
-                return fid
+            if not isinstance(f, dict):
+                continue
+            old = f.get("text", "").strip()
+            if old == text.strip() or _jaccard(new_tokens, _norm_tokens(old)) >= threshold:
+                matched_id = fid
+                break
+
+        if matched_id is not None:
+            f = facts[matched_id]
+            f["mention_count"] = f.get("mention_count", 1) + 1
+            f["importance"] = max(f.get("importance", 1), importance)
+            if source == "explicit" and f.get("source") != "explicit":
+                f["source"] = "explicit"
+            if len(text) > len(f.get("text", "")):
+                f["text"] = text
+            f["updated_at"] = now
+            atomic_write_json(FACTS_FILE, facts)
+            return matched_id
+
         fid = _next_fact_id(facts)
         facts[fid] = {
             "text": text,
@@ -315,3 +357,97 @@ def update_profile(key: str, value: Any) -> None:
         "updated_at": datetime.now().isoformat(),
     }
     atomic_write_json(PROFILE_FILE, profile)
+
+
+# ═══════════════ 程序性记忆（可复用流程） ═══════════════
+# design.md 规划的第四层：任务成功后沉淀“目标→有序步骤”的模式，
+# 供以后同类任务规划时复用。纯本地读写，不依赖 LLM。
+
+_procs_cache: Optional[Dict[str, Any]] = None
+_procs_mtime: Optional[float] = None
+
+
+def _load_procedures() -> Dict[str, Any]:
+    global _procs_cache, _procs_mtime
+    mtime = _file_mtime(PROCEDURES_FILE)
+    if _procs_cache is not None and mtime == _procs_mtime:
+        return _procs_cache
+    if PROCEDURES_FILE.exists():
+        try:
+            with open(PROCEDURES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            _procs_cache = data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, IOError, AttributeError):
+            _procs_cache = {}
+    else:
+        _procs_cache = {}
+    _procs_mtime = mtime
+    return _procs_cache
+
+
+def _next_proc_id(procs: Dict[str, Any]) -> str:
+    max_n = 0
+    for k in procs:
+        if "_" in k:
+            try:
+                max_n = max(max_n, int(k.split("_")[1]))
+            except (ValueError, IndexError):
+                continue
+    return f"proc_{max_n + 1}"
+
+
+def add_procedure(goal: str, steps: List[Dict[str, Any]],
+                  keywords: Optional[List[str]] = None,
+                  review_criteria: str = "", max_steps: int = 10) -> str:
+    """沉淀一条可复用流程（目标近似重复则合并、累加复用次数）"""
+    if not goal or not goal.strip() or not steps:
+        return ""
+    with _store_lock:
+        procs = _load_procedures()
+        now = datetime.now().isoformat()
+        gtokens = _norm_tokens(goal)
+        for pid, p in procs.items():
+            if isinstance(p, dict) and _jaccard(gtokens, _norm_tokens(p.get("goal", ""))) >= 0.9:
+                p["use_count"] = int(p.get("use_count", 1)) + 1
+                p["updated_at"] = now
+                atomic_write_json(PROCEDURES_FILE, procs)
+                return pid
+        clean_steps: List[Dict[str, str]] = []
+        for s in steps[:max_steps]:
+            if not isinstance(s, dict):
+                continue
+            clean_steps.append({
+                "title": str(s.get("title", ""))[:200],
+                "action": str(s.get("action", ""))[:200],
+                "acceptance": str(s.get("acceptance", ""))[:160],
+            })
+        if not clean_steps:
+            return ""
+        pid = _next_proc_id(procs)
+        procs[pid] = {
+            "goal": goal.strip()[:300],
+            "steps": clean_steps,
+            "keywords": keywords or [],
+            "review_criteria": (review_criteria or "")[:200],
+            "created_at": now,
+            "updated_at": now,
+            "use_count": 1,
+            "success_count": 1,
+        }
+        atomic_write_json(PROCEDURES_FILE, procs)
+        return pid
+
+
+def load_procedures() -> Dict[str, Any]:
+    """加载全部程序性记忆"""
+    return _load_procedures()
+
+
+def remove_procedure(proc_id: str) -> bool:
+    with _store_lock:
+        procs = _load_procedures()
+        if proc_id in procs:
+            del procs[proc_id]
+            atomic_write_json(PROCEDURES_FILE, procs)
+            return True
+        return False

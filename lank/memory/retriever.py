@@ -10,7 +10,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import get_config
-from .store import load_facts, load_summaries
+from . import vector
+from .store import load_facts, load_procedures, load_summaries
 
 _WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
 
@@ -58,10 +59,34 @@ def _weights() -> Tuple[float, float, float]:
     )
 
 
-def _score(query_tokens: set, text: str, entry: Dict[str, Any]) -> float:
-    """综合评分：相关性主导，新鲜度/重要性仅在有相关性时加成"""
+def _semantic_scores(query: str, docs: List[str]) -> Optional[List[float]]:
+    """向量增强：返回每个 doc 与 query 的语义相关度(0~1)。
+
+    未开启向量/后端不可用/失败时返回 None（调用方回退纯关键词）。默认关闭，
+    因此不改变现有行为；开启后能让同义/跨表述的记忆也被召回。
+    """
+    if not docs or not vector.enabled():
+        return None
+    try:
+        qv = vector.embed([query])
+        dv = vector.embed(docs)
+        if not qv or not dv or qv[0] is None:
+            return None
+        return [max(0.0, vector.cosine(qv[0], d)) for d in dv]
+    except Exception:
+        return None
+
+
+def _score(query_tokens: set, text: str, entry: Dict[str, Any],
+           sem: Optional[float] = None) -> float:
+    """综合评分：相关性主导，新鲜度/重要性仅在有相关性时加成。
+
+    sem 为可选语义相关度：与关键词相关性取较大，使无语词重叠但语义相近的记忆也能命中。
+    """
     w_rel, w_fresh, w_imp = _weights()
     rel = _relevance(query_tokens, _tokenize(text))
+    if sem is not None and sem > rel:
+        rel = sem
     fresh = _freshness(entry.get("timestamp", entry.get("updated_at", "")))
     imp = _importance(entry)
     if rel == 0:
@@ -77,10 +102,13 @@ def search_summaries(query: str, top_k: Optional[int] = None) -> List[Dict[str, 
     if top_k is None:
         top_k = int(get_config("memory_top_k", 5))
     query_tokens = _tokenize(query)
+    entries = list(load_summaries().items())
+    texts = [e.get("summary", "") for _sid, e in entries]
+    sems = _semantic_scores(query, texts)
     items = []
-    for sid, entry in load_summaries().items():
-        text = entry.get("summary", "")
-        score = _score(query_tokens, text, entry)
+    for i, (sid, entry) in enumerate(entries):
+        text = texts[i]
+        score = _score(query_tokens, text, entry, sem=(sems[i] if sems else None))
         if score > 0:
             items.append({
                 "kind": "summary",
@@ -100,10 +128,13 @@ def search_facts(query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]
     if top_k is None:
         top_k = int(get_config("memory_top_k", 5))
     query_tokens = _tokenize(query)
+    entries = list(load_facts().items())
+    texts = [e.get("text", "") for _fid, e in entries]
+    sems = _semantic_scores(query, texts)
     items = []
-    for fid, entry in load_facts().items():
-        text = entry.get("text", "")
-        score = _score(query_tokens, text, entry)
+    for i, (fid, entry) in enumerate(entries):
+        text = texts[i]
+        score = _score(query_tokens, text, entry, sem=(sems[i] if sems else None))
         if score > 0:
             items.append({
                 "kind": "fact",
@@ -111,6 +142,43 @@ def search_facts(query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]
                 "timestamp": entry.get("updated_at", ""),
                 "text": text[:200],
                 "source": entry.get("source", "auto"),
+                "score": score,
+            })
+    items.sort(key=lambda x: x["score"], reverse=True)
+    return items[:top_k]
+
+
+def _procedure_doc_text(entry: Dict[str, Any]) -> str:
+    parts = [str(entry.get("goal", ""))]
+    for s in entry.get("steps", []):
+        if isinstance(s, dict):
+            parts.append(str(s.get("title", "")))
+    return " ".join(p for p in parts if p)
+
+
+def search_procedures(query: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+    """检索可复用流程（程序性记忆），按 相关性×新鲜度×复用次数 排序"""
+    if not query or not query.strip():
+        return []
+    if top_k is None:
+        top_k = int(get_config("memory_procedure_top_k", 3))
+    query_tokens = _tokenize(query)
+    entries = list(load_procedures().items())
+    texts = [_procedure_doc_text(e) for _pid, e in entries]
+    sems = _semantic_scores(query, texts)
+    items = []
+    for i, (pid, entry) in enumerate(entries):
+        score = _score(query_tokens, texts[i], entry, sem=(sems[i] if sems else None))
+        # 复用次数作为附加信号（被反复成功使用的流程优先）
+        score += min(float(entry.get("use_count", 1)) - 1.0, 3.0) * 0.05
+        if score > 0:
+            items.append({
+                "kind": "procedure",
+                "proc_id": pid,
+                "goal": entry.get("goal", ""),
+                "steps": entry.get("steps", []),
+                "use_count": int(entry.get("use_count", 1)),
+                "timestamp": entry.get("updated_at", ""),
                 "score": score,
             })
     items.sort(key=lambda x: x["score"], reverse=True)
@@ -181,6 +249,22 @@ def get_relevant_context(query: str = "", top_k: Optional[int] = None) -> str:
         lines.append("\n## 相关历史会话")
         for r in summaries:
             lines.append(f"- 📜 {r.get('text', '')[:200]}")
+
+    # 可复用流程（程序性记忆）：仅在有查询且开启时注入，帮助复用过往成功套路
+    if query and get_config("memory_procedural_enabled", True):
+        try:
+            procs = search_procedures(query)
+            if procs:
+                lines.append("\n## 可复用流程（过往成功套路）")
+                for p in procs:
+                    steps = p.get("steps", [])
+                    seq = " → ".join(
+                        str(s.get("title", "")) for s in steps if isinstance(s, dict)
+                    )
+                    used = p.get("use_count", 1)
+                    lines.append(f"- 🔁 {p.get('goal', '')[:120]}（用过{used}次）: {seq[:200]}")
+        except Exception:
+            pass
 
     if not lines:
         return ""

@@ -68,6 +68,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "memory_auto_extract": True,              # 会话后自动抽取画像
     "memory_profile_top_k": 12,               # 注入系统提示词的用户画像事实条数上限（按相关性×重要性排序）
     "memory_max_inject_chars": 2500,          # 注入系统提示词的记忆文本总长上限（防长期记忆变成 token 炸弹）
+    "memory_dedup_similarity": 0.85,          # 事实近似去重的相似度阈值（0~1，低于则不合并）
+    "memory_procedural_enabled": True,        # 任务成功后沉淀“可复用流程”（程序性记忆）
+    "memory_procedure_top_k": 3,              # 规划阶段注入的可复用流程条数上限
+    "memory_vector_enabled": False,           # 可选：本地向量嵌入增强检索（需 fastembed，未装自动降级）
+    "memory_vector_model": "Xenova/all-MiniLM-L6-v2",  # 本地嵌入模型名（多语言可换 bge 系列）
+    "max_step_context_chars": 120000,         # 单步工具循环消息累计字符预算护栏（防单步上下文失控）
 }
 
 

@@ -537,6 +537,7 @@ class ChatApp:
   /resume   <ID> 恢复历史会话（回滚到之前的聊天记录）
   /export   [json] 导出对话
   /stats    使用统计
+  /memory   list|search <关键词>|forget <编号> 记忆管理
   /theme    [名称] 切换主题
   /model    [名称] 切换模型
   /todo     list|add 任务|done 编号|del 编号
@@ -559,6 +560,52 @@ class ChatApp:
                 out.append(get_stats_summary())
             except Exception:
                 out.append("无法获取统计")
+        elif cmd == "/memory":
+            try:
+                from .memory import (
+                    load_facts, load_procedures, remove_fact, remove_procedure,
+                    search_memories, search_procedures,
+                )
+                sub_parts = cmd_arg.split(maxsplit=1)
+                sub = sub_parts[0].lower() if sub_parts else "list"
+                sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
+                if sub == "list":
+                    facts = load_facts()
+                    procs = load_procedures()
+                    out.append(f"记忆总览：长期事实 {len(facts)} 条，可复用流程 {len(procs)} 条")
+                    if facts:
+                        out.append("— 长期事实（/memory forget <编号> 删除）—")
+                        for fid, e in list(facts.items())[:20]:
+                            mark = "\U0001F4BE" if e.get("source") == "explicit" else "  "
+                            txt = str(e.get("text", ""))[:60]
+                            out.append(f"  {mark} [{fid}] {txt}")
+                    if procs:
+                        out.append("— 可复用流程 —")
+                        for pid, p in list(procs.items())[:10]:
+                            goal = str(p.get("goal", ""))[:50]
+                            out.append(f"  \U0001F501 [{pid}] {goal}（用过{p.get('use_count', 1)}次）")
+                elif sub == "search" and sub_arg:
+                    results = search_memories(sub_arg)
+                    procs = search_procedures(sub_arg)
+                    if not results and not procs:
+                        out.append("没有匹配的记忆")
+                    for r in results:
+                        out.append(f"  [{r.get('kind', '')}] {r.get('text', '')[:80]}")
+                    for p in procs:
+                        out.append(f"  [procedure] {p.get('goal', '')[:80]}")
+                elif sub == "forget" and sub_arg:
+                    mid = sub_arg.strip()
+                    if mid.startswith("proc"):
+                        ok = remove_procedure(mid)
+                    elif mid.startswith("fact"):
+                        ok = remove_fact(mid)
+                    else:
+                        ok = remove_fact(mid) or remove_procedure(mid)
+                    out.append(f"已删除 {mid}" if ok else f"未找到记忆 {mid}")
+                else:
+                    out.append("用法: /memory [list|search <关键词>|forget <编号>]")
+            except Exception:
+                out.append("记忆操作失败")
         elif cmd == "/theme":
             try:
                 from .utils import list_themes, THEMES

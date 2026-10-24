@@ -104,8 +104,10 @@ class AgentLoop:
             max_review = get_int("max_review_rounds", 3)
 
             # 迭代 = 1 次初始执行 + 最多 max_review 次「审核未达标→补步→重跑」
+            prev_done = -1
             for round_idx in range(max_review + 1):
                 executor.execute_plan(plan)
+                done_now = sum(1 for s in plan.steps if s.status == StepStatus.DONE)
 
                 # 有 blocked 步骤也进入 review（断点续传）：
                 # 让审核基于 blocked 步骤的产出/受阻原因，决定补哪些新步骤
@@ -136,6 +138,7 @@ class AgentLoop:
                     # 用户终审（auto 模式直接通过）
                     if auto or self.callbacks.on_review_confirm is None \
                             or self.callbacks.on_review_confirm(verdict):
+                        self._record_procedure(plan)
                         return AgentResult(True, text, phase=AgentPhase.REVIEW, plan=plan)
                     # 用户终审驳回：如实标记未确认，可继续对话修改
                     return AgentResult(
@@ -144,6 +147,14 @@ class AgentLoop:
                     )
 
                 # 未达标：追加新步骤，继续执行
+                # ── 稳健性护栏：无进展早停 ──
+                # 本轮完成步骤数相比上一轮毫无增长（且未交付），继续整盘重跑
+                # 只会成倍消耗 token 而难以突破，提前止损。
+                if prev_done >= 0 and done_now <= prev_done:
+                    logger.info("本轮无进展（完成 %d 步），提前结束迭代以节省开销", done_now)
+                    break
+                prev_done = done_now
+
                 if not verdict.new_steps:
                     break  # 无新步骤可做
                 existing_ids = {s.id for s in plan.steps}
@@ -169,6 +180,24 @@ class AgentLoop:
 
         finally:
             set_current_loop(None)
+
+    def _record_procedure(self, plan: Plan) -> None:
+        """把成功交付的计划沉淀为程序性记忆（纯本地、不调 API），供后续相似任务复用套路"""
+        if not get_config("memory_procedural_enabled", True):
+            return
+        try:
+            done = [s for s in plan.steps if s.status == StepStatus.DONE]
+            if not done:
+                return
+            steps = [
+                {"title": s.title, "action": s.action, "acceptance": s.acceptance}
+                for s in done
+            ]
+            from ..memory import add_procedure
+            add_procedure(plan.goal, steps, review_criteria=plan.review_criteria)
+            logger.info("已沉淀程序性记忆：%s（%d 步）", plan.goal[:40], len(steps))
+        except Exception as e:
+            logger.info("程序性记忆沉淀跳过（不影响主流程）: %s", e)
 
     def _summarize(self, plan: Plan) -> str:
         lines = [f"📋 任务「{plan.goal}」执行结束", ""]
