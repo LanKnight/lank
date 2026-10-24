@@ -86,7 +86,27 @@ class TestAgentTypes(unittest.TestCase):
 
 
 class TestAgentLoop(unittest.TestCase):
-    """FakeClient 驱动端到端状态机测试（不联网）"""
+    """FakeClient 驱动端到端状态机测试（不联网）
+
+    测试隔离：强制关闭 auto_mode/test_mode，避免被测逻辑受用户全局
+    ~/.lank/config.json 影响（否则 test_mode=true 会让计划/终审自动跳过）。
+    """
+
+    def setUp(self):
+        import lank.agent.loop as loop_mod
+        from unittest import mock
+        self._real_get_config = loop_mod.get_config
+
+        def _get_config(key, default=None):
+            if key in ("auto_mode", "test_mode"):
+                return False
+            return self._real_get_config(key, default)
+
+        self._patcher = mock.patch.object(loop_mod, "get_config", _get_config)
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
 
     @staticmethod
     def _tool_call(name):

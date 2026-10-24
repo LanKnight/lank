@@ -131,7 +131,11 @@ def get_all_tools() -> List[Dict[str, Any]]:
 
 
 def get_tool_descriptions() -> str:
-    """获取工具描述文本（用于系统提示词；缓存，注册后不变）"""
+    """获取工具描述文本（用于系统提示词；缓存，注册后不变）
+
+    精简为一行一工具：完整参数类型/说明已由 API 原生 tools schema 下发，
+    系统提示词 里再堆一份长描述是重复开销，且每步每轮都重发——直接影响 token 成本。
+    """
     global _tool_desc_cache
     if _tool_desc_cache is not None:
         return _tool_desc_cache
@@ -139,18 +143,14 @@ def get_tool_descriptions() -> str:
         _tool_desc_cache = ""
         return ""
 
-    lines = ["\n## 可用工具", ""]
+    lines = ["\n## 可用工具（参数类型见工具定义，直接调用即可）", ""]
     for name, info in _tool_registry.items():
-        lines.append(f"### {name}")
-        lines.append(f"描述: {info['description']}")
-        if info["parameters"]:
-            lines.append("参数:")
-            for p in info["parameters"]:
-                required = "必填" if p.get("required", True) else "可选"
-                lines.append(f"  - {p['name']} ({p.get('type', 'string')}, {required}): {p.get('description', '')}")
-        if info["approval"] != "none":
-            lines.append("⚠️ 需要用户确认")
-        lines.append("")
+        params = ", ".join(
+            p["name"] + ("" if p.get("required", True) else "?")
+            for p in info["parameters"]
+        )
+        note = "（需确认）" if info["approval"] != "none" else ""
+        lines.append(f"- {name}: {info['description']} [{params}]{note}")
 
     result = "\n".join(lines)
     _tool_desc_cache = result

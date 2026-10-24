@@ -36,6 +36,7 @@ def print_help():
 用法:
   lank tui             启动 TUI 聊天界面（支持 /ai 切换 AI 模式）
   lank ai [问题]       启动 AI 聊天界面（可带初始问题）
+  lank run <任务>      非交互自动执行一整段任务（文件路径或文本，可选 --cwd DIR）
   lank set             交互式配置向导
   lank set show        查看当前配置
   lank set reset       重置配置
@@ -125,6 +126,32 @@ def run_ai_chat(initial_question: Optional[str] = None):
 
     from .tui import run_ai_chat as _tui_ai_chat
     return _tui_ai_chat(initial_question, client=client)
+
+
+def _run_headless(args) -> int:
+    """lank run <任务文件/文本> [--cwd DIR]：非交互自动执行任务"""
+    cwd = None
+    task_parts = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--cwd":
+            if i + 1 >= len(args):
+                print("❌ --cwd 需要一个目录参数")
+                return 2
+            cwd = args[i + 1]
+            i += 2
+            continue
+        task_parts.append(a)
+        i += 1
+
+    task_arg = " ".join(task_parts).strip()
+    if not task_arg:
+        print("用法: lank run <任务文件路径或文本> [--cwd DIR]")
+        return 2
+
+    from .runner import run_task
+    return run_task(task_arg, cwd=cwd)
 
 
 def run_install():
@@ -412,6 +439,9 @@ def cli(argv: Optional[List[str]] = None) -> int:
     elif cmd == "ai":
         initial_question = " ".join(argv[1:]) if len(argv) > 1 else None
         return run_ai_chat(initial_question)
+
+    elif cmd == "run":
+        return _run_headless(argv[1:])
 
     elif cmd == "set":
         return run_set_command(argv[1:])

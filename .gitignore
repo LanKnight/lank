@@ -48,6 +48,13 @@ Thumbs.db
 *.temp
 lank_task_progress.md
 
+# 测试题目数据（仅本地用于验证 Agent，不纳入版本管理）
+testQuestion/
+
+# Agent 运行产物（图表/论文等，本地生成，不提交）
+output/
+*_deliverable.md
+
 # User configuration (contains user-specific paths)
 .lank/config.json
 

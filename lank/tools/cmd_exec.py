@@ -153,6 +153,12 @@ def execute_command(command: str) -> str:
         # 但仍过黑名单 + argv 级删除类检查（防 del/q、rd/s 附加开关绕过）+ 超时 + 截断
         use_shell = sys.platform == "win32"
 
+        # 子进程统一以 UTF-8 输出中文，父进程也按 UTF-8 解码；errors="replace" 兜底，
+        # 绝不再因 GBK 解码崩溃（数模脚本大量中文输出曾触发 UnicodeDecodeError）。
+        run_env = dict(os.environ)
+        run_env.setdefault("PYTHONIOENCODING", "utf-8")
+        run_env.setdefault("PYTHONUTF8", "1")
+
         if use_shell:
             # Windows 分支也做 argv 级检查（shlex 尽力解析引号/空格）
             try:
@@ -172,8 +178,11 @@ def execute_command(command: str) -> str:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 cwd=working_dir,
+                env=run_env,
             )
         else:
             # 非 Windows：参数化执行（不经过 shell），先对 argv 做删除类检查
@@ -190,8 +199,11 @@ def execute_command(command: str) -> str:
                 args,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 cwd=working_dir,
+                env=run_env,
             )
 
         output_parts = []

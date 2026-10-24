@@ -29,14 +29,6 @@ class Planner:
         self.on_text = on_text
         self.on_tool_call = on_tool_call
 
-    def plan_or_answer(self, user_input: str) -> Tuple[bool, str, Optional[Plan]]:
-        """分类 + 规划
-
-        Returns:
-            (success, answer_or_error, plan)
-            - plan 为 None 时，answer 是直接回答（简单问答，已流式输出）
-            - plan 非 None 时，进入 PLAN 阶段
-        """
     def plan_or_answer(self, user_input: str,
                        history: Optional[List[Dict[str, Any]]] = None) -> Tuple[bool, str, Optional[Plan]]:
         """分类 + 规划

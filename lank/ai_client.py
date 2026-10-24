@@ -161,13 +161,15 @@ class AIClient:
                         f"\n  💡 请执行: lank set set api_base {DEFAULT_API_BASE}"
                     )
 
-        self.temperature = get_model_param(
-            self.model, "temperature",
-            get_config("temperature", 0.7),
-        )
-        self.max_tokens = get_model_param(
-            self.model, "max_tokens",
-            get_config("max_tokens", 4096),
+        # 参数优先级：config 显式值 > 模型专属默认 > 全局默认
+        # （修正旧 bug：get_model_param 会优先返回模型表值，导致用户 config 被忽略）
+        self.temperature = float(get_config(
+            "temperature",
+            get_model_param(self.model, "temperature", 0.7),
+        ))
+        self.max_tokens = get_int(
+            "max_tokens",
+            get_model_param(self.model, "max_tokens", 8192),
         )
         self.ai_name = get_config("ai_name", "LANK")
         self.user_name = get_config("user_name", "用户")
@@ -208,13 +210,13 @@ class AIClient:
     def set_model(self, name: str) -> None:
         """运行时切换模型（无需重建客户端）"""
         self.model = name
-        self.temperature = get_model_param(
-            name, "temperature",
-            get_config("temperature", 0.7),
-        )
-        self.max_tokens = get_model_param(
-            name, "max_tokens",
-            get_config("max_tokens", 4096),
+        self.temperature = float(get_config(
+            "temperature",
+            get_model_param(name, "temperature", 0.7),
+        ))
+        self.max_tokens = get_int(
+            "max_tokens",
+            get_model_param(name, "max_tokens", 8192),
         )
 
     def _build_system_prompt(self) -> str:

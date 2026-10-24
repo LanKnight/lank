@@ -33,6 +33,11 @@ PLAN_PROMPT = """你是 LANK 的任务规划者（ReAct 框架 PLAN 阶段）。
   · tools_hint: 预计需要的工具名列表（可选）
 - 信息不足时，规划一个 ask_user 步骤向用户提问，或明确标注需先获取的信息；
 - 步骤不超过 {max_steps} 步；若任务确实庞大，宁可把步骤拆得更细而非合并；
+- 对于数据分析/建模/报告类任务，计划必须包含“产出物驱动”的具体步骤，例如：
+  · 先用 execute_command + Python 读取并概览数据文件（.xls/.csv 等）；
+  · 每个关键分析/图表单独成步：write_to_file 写出生成脚本 → execute_command 运行产出 .png/.csv；
+  · 最终把方案/求解/论文分别 write_to_file 落成 .md 交付文件；
+  验收标准要能客观核对（如“工作目录存在 xxx.png 且非空”、“xxx.md 已包含 XX 章节”）。
 - 最后给出整体交付标准 review_criteria（任务完成的总验收依据）。
 
 ## 回复风格
@@ -57,7 +62,25 @@ EXEC_PROMPT = """你是 LANK 的执行者（ReAct 框架 ACT 阶段）。
    （step_id 为 {step_id}，summary 简要描述完成情况）；
 4. 如果本步无法完成（工具反复失败、用户取消、缺少必要信息），
    调用 step_done 时在 summary 中说明原因，或在回复中明确说明；
-5. 未调用 step_done 即结束，将被视为步骤未完成。"""
+5. 未调用 step_done 即结束，将被视为步骤未完成。
+
+## 数据与产物处理规范（重要）
+6. 读二进制/表格数据文件（.xls/.xlsx/.csv/.docx/.pdf 等）不能用 read_file
+   （文本读取会得到乱码）；用 execute_command 调 Python 读取。但必须高效：
+   只打印必要概览（如 shape / columns / head(3~5)），严禁一次性打印整表或
+   把整个多 sheet 内容、大段数据 dump 到 stdout 或写成大文件再 read_file 读回来
+   （那会瞬间灌爆上下文、极大地推高 token 与耗时）。需要结构信息时只取样本。
+7. 需要交付的东西必须写成文件（用 write_to_file 落盘到工作目录），不要只在对话里
+   口述：方案/求解/论文写成 .md 文件；图表/表格由“可直接运行的 Python 脚本”生成并
+   保存为文件（图片 .png、表格 .csv），再用 write_to_file 生成脚本、execute_command 运行。
+   脚本本身要短小聚焦，不要写动辄几百行的巨型探查脚本。
+8. matplotlib 无界面运行：脚本开头先 `import matplotlib; matplotlib.use("Agg")` 再导 pyplot；
+   中文标签：`plt.rcParams["font.sans-serif"]=["Microsoft YaHei","SimHei","SimSun"]` 且
+   `plt.rcParams["axes.unicode_minus"]=False`；用 `plt.savefig(r"文件名.png", dpi=120, bbox_inches="tight")`
+   保存，不要调用 plt.show()（会阻塞）。
+9. 省 token 与提速：优先复用已有脚本与产出文件，不重复探查同一数据；一个步骤内的
+   工具调用尽量精简（目标 < 8 次）；运行脚本用简短命令如 `python 脚本路径`，避免把
+   大段代码塞进 -c 引起转义/引号问题；回复与注释保持简洁，不要长篇解释已知内容。"""
 
 # ============================================================
 # REVIEW_PROMPT（对照验收标准逐条核对）

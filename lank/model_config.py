@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 DEFAULT_API_BASE = "https://api.deepseek.com"
 
 # OpenAI 兼容客户端参数
-CLIENT_TIMEOUT = 30.0         # 请求超时（秒）
+CLIENT_TIMEOUT = 180.0        # 请求超时（秒）——长输出任务（论文/代码）需宽松
 CLIENT_MAX_RETRIES = 2        # 失败重试次数
 
 # ============================================================
@@ -29,13 +29,13 @@ MODELS: Dict[str, Dict[str, Any]] = {
     "deepseek-v4-flash": {
         "name": "DeepSeek V4 Flash",
         "description": "快速响应模型，适合日常助手任务",
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "supports_tools": True,
     },
     "deepseek-v4-pro": {
         "name": "DeepSeek V4 Pro",
         "description": "高性能模型，适合复杂分析与编程任务",
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "supports_tools": True,
     },
 }
@@ -52,14 +52,14 @@ FALLBACK_MODEL = "deepseek-v4-flash"
 
 DEFAULT_MODEL_PARAMS: Dict[str, Any] = {
     "temperature": 0.7,       # 0-2，越高越有创造性
-    "max_tokens": 4096,       # 单次回复最大 token 数
+    "max_tokens": 8192,       # 单次回复最大 token 数（长输出任务不截断）
     "top_p": 1.0,             # 核采样参数
     "frequency_penalty": 0.0, # 重复惩罚
     "presence_penalty": 0.0,  # 主题多样性
 }
 
 # 工具调用循环安全限制（默认值；运行时可用配置项 max_tool_rounds 覆盖）
-MAX_TOOL_CALL_ROUNDS = 60   # 单次请求中最多连续工具调用轮数，防止无限循环
+MAX_TOOL_CALL_ROUNDS = 25   # 单次请求中最多连续工具调用轮数（控制成本，防无限循环）
 
 # ============================================================
 # 系统提示词

@@ -45,15 +45,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # ── v0.3.0：ReAct 框架 ──
     "auto_mode": False,             # True 时计划自动确认、review 自动通过（全自动）
     "test_mode": False,             # 测试/演示模式：工具免确认（危险命令黑名单仍拦截）、计划终审自动通过
-    "max_plan_steps": 10,           # 单计划最大步骤数
-    "max_review_rounds": 3,         # review 未达标最大迭代轮数
-    "max_tool_rounds": 60,          # 单次请求中最多连续工具调用轮数（防止无限循环）
+    "max_plan_steps": 8,            # 单计划最大步骤数（步骤越多每步固定开销越大，控制成本）
+    "max_review_rounds": 2,         # review 未达标最大迭代轮数
+    "max_tool_rounds": 25,          # 单次请求中最多连续工具调用轮数（控制成本，防无限循环）
     "plan_prompt": "",              # 覆盖 PLAN_PROMPT
     "exec_prompt": "",              # 覆盖 EXEC_PROMPT
     "review_prompt": "",            # 覆盖 REVIEW_PROMPT
     # ── 安全与上下文 ──
-    "tool_output_limit": 8192,      # 工具结果截断字符数
-    "cmd_output_limit": 20480,      # 命令输出截断字符数
+    "tool_output_limit": 4096,      # 工具结果截断字符数（喂回模型的文本是 token 大头，取精简值）
+    "cmd_output_limit": 6144,       # 命令输出截断字符数
     "cmd_timeout": 60,              # 命令超时秒数
     "cmd_allowlist": [],            # 命令白名单（可自动执行）
     "api_max_retries": 2,           # API 429/5xx 退避重试次数
