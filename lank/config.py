@@ -66,6 +66,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "memory_importance_weight": 0.3,          # 检索权重：重要性
     "memory_max_facts": 200,                  # 语义记忆容量上限
     "memory_auto_extract": True,              # 会话后自动抽取画像
+    "memory_profile_top_k": 12,               # 注入系统提示词的用户画像事实条数上限（按相关性×重要性排序）
+    "memory_max_inject_chars": 2500,          # 注入系统提示词的记忆文本总长上限（防长期记忆变成 token 炸弹）
 }
 
 

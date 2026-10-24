@@ -128,41 +128,66 @@ def search_memories(query: str, top_k: Optional[int] = None) -> List[Dict[str, A
 
 
 def get_relevant_context(query: str = "", top_k: Optional[int] = None) -> str:
-    """获取注入 AI 提示词的相关记忆文本（「提前的加载」）"""
+    """获取注入 AI 提示词的相关记忆文本（「提前的加载」）
+
+    省 token 要点：
+    - 尊重 memory_enabled 开关（关闭则完全不注入）；
+    - 画像事实按 相关性×重要性×新鲜度 排序，只注入 Top-K，不再全量灌入；
+    - 事实只在画像段出现、摘要只在该历史段出现，消除旧版“事实被重复注入”浪费；
+    - 总长受 memory_max_inject_chars 安全封顶。
+    """
+    if not get_config("memory_enabled", True):
+        return ""
     if top_k is None:
         top_k = int(get_config("memory_top_k", 5))
+    profile_top_k = int(get_config("memory_profile_top_k", 12))
 
     lines: List[str] = []
+    query_tokens = _tokenize(query)
 
-    # 用户画像（总是注入）
+    # 用户画像/长期事实：按得分排序取 Top-K（空查询时 relevance=0，自然退化为重要性×新鲜度排序）
     try:
-        from .store import get_profile_summary
-        profile = get_profile_summary()
-        if profile:
-            lines.append(profile)
+        facts = load_facts()
+        scored_facts = sorted(
+            facts.items(),
+            key=lambda kv: _score(query_tokens, kv[1].get("text", ""), kv[1]),
+            reverse=True,
+        )[:profile_top_k]
+        if scored_facts:
+            lines.append("\n## 用户画像与长期记忆")
+            for _fid, entry in scored_facts:
+                text = entry.get("text", "")
+                if not text:
+                    continue
+                mark = "💾 " if entry.get("source") == "explicit" else ""
+                lines.append(f"- {mark}{text[:160]}")
     except Exception:
         pass
 
-    # 相关记忆
-    results = search_memories(query, top_k) if query else []
-    if not query:
-        # 无查询词：退回最近摘要（会话启动默认加载）
-        summaries = load_summaries()
+    # 历史会话摘要（情景记忆）
+    if query:
+        summaries = [r for r in search_memories(query, top_k) if r.get("kind") == "summary"]
+    else:
         recent = sorted(
-            summaries.values(),
+            load_summaries().values(),
             key=lambda s: s.get("timestamp", ""),
             reverse=True,
         )[:2]
-        results = [{
-            "kind": "summary",
-            "text": s.get("summary", ""),
-            "timestamp": s.get("timestamp", ""),
-        } for s in recent if s.get("summary")]
+        summaries = [
+            {"kind": "summary", "text": s.get("summary", "")[:200]}
+            for s in recent if s.get("summary")
+        ]
+    if summaries:
+        lines.append("\n## 相关历史会话")
+        for r in summaries:
+            lines.append(f"- 📜 {r.get('text', '')[:200]}")
 
-    if results:
-        lines.append("\n## 相关记忆")
-        for r in results:
-            tag = "📜" if r.get("kind") == "summary" else "🧠"
-            lines.append(f"- {tag} {r.get('text', '')}")
+    if not lines:
+        return ""
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    # 总长安全封顶（保留开头，因最重要的画像/标题在前）
+    max_chars = int(get_config("memory_max_inject_chars", 2500))
+    if max_chars > 0 and len(result) > max_chars:
+        result = result[:max_chars]
+    return result

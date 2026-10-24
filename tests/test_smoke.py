@@ -272,6 +272,44 @@ class TestMemory(unittest.TestCase):
         self.assertTrue(r)
         self.assertIn("架构设计", r[0]["text"])
 
+    def test_relevant_context_budget_and_dedup(self):
+        """注入：画像按 Top-K 截断、事实不重复、memory_enabled 关闭完全不注入"""
+        from unittest import mock
+        import lank.memory.retriever as rt
+        for i in range(30):
+            self.ms.add_fact(f"用户偏好事实编号{i} 主题 arch{i}", source="auto", importance=1)
+        self.ms.add_fact("用户偏好中文回复 与 arch 相关", source="explicit", importance=3)
+        self.ms.add_summary("s1", "2025-01-01T00:00:00", "讨论了 arch 架构设计", ["arch"], 3)
+
+        ctx = rt.get_relevant_context("arch")
+        self.assertIn("用户画像与长期记忆", ctx)
+        bullet_lines = [ln for ln in ctx.splitlines() if ln.startswith("- ")]
+        self.assertLessEqual(len(bullet_lines), 17)   # 画像(<=12) + 历史摘要若干
+        # 去重：旧版会把同一条事实注入两次，现在只出现一次
+        self.assertEqual(ctx.count("用户偏好中文回复"), 1)
+
+        real = rt.get_config
+        with mock.patch.object(
+            rt, "get_config",
+            lambda k, d=None: (False if k == "memory_enabled" else real(k, d)),
+        ):
+            self.assertEqual(rt.get_relevant_context("arch"), "")
+
+    def test_relevant_context_char_cap(self):
+        """总长安全封顶：无论多少条事实，注入文本不超过 memory_max_inject_chars"""
+        from unittest import mock
+        import lank.memory.retriever as rt
+        long = "很长" * 80
+        for i in range(40):
+            self.ms.add_fact(f"事实{i}:" + long, importance=2)
+        real = rt.get_config
+        with mock.patch.object(
+            rt, "get_config",
+            lambda k, d=None: (300 if k == "memory_max_inject_chars" else real(k, d)),
+        ):
+            ctx = rt.get_relevant_context("事实")
+        self.assertLessEqual(len(ctx), 300)
+
     def test_save_load_conversation(self):
         sid = self.ms.save_conversation([{"role": "user", "content": "你好"}])
         self.assertTrue(sid)
