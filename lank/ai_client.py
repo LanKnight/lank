@@ -226,6 +226,13 @@ class AIClient:
         self.total_tokens += t
         self.total_api_calls += 1
         self.last_usage = {"prompt_tokens": p, "completion_tokens": c, "total_tokens": t}
+        # 增量落盘到 stats.json（跨进程/会话累计）：使 TUI 交互路径的 token 也能在 /stats 看到
+        if t > 0:
+            try:
+                from .utils import record_token_usage
+                record_token_usage(p, c, t)
+            except Exception:
+                pass  # 落盘失败绝不影响主流程
 
     def _record_usage(self, response: Any) -> None:
         """从 OpenAI 响应对象读取 usage 并累加（无 usage 时静默跳过）"""

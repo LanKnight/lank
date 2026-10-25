@@ -175,15 +175,9 @@ def run_task(task_arg: str, cwd: Optional[str] = None) -> int:
     # 列出工作目录里新产出的文件，方便核对
     _list_outputs(console, working_dir)
 
-    # 本任务 token 用量（可观测成本）：打印 + 累加落盘到 stats.json
+    # 本任务 token 用量（可观测成本）：仅打印本次摘要
+    # （逐次用量已由 AIClient 在每次响应时增量落盘到 stats.json，此处不再累加以免重复计数）
     try:
-        from .utils import record_token_usage
-        if client.total_tokens:
-            record_token_usage(
-                client.total_prompt_tokens,
-                client.total_completion_tokens,
-                client.total_tokens,
-            )
         console.print(f"\n[bold]📊 本次用量:[/bold] {client.usage_summary()}")
     except Exception:
         pass

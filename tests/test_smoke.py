@@ -83,9 +83,31 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(smart_truncate("abc", 100), "abc")   # 未超预算不截
         self.assertEqual(smart_truncate("abc", 0), "abc")     # limit<=0 不截
 
+    def test_is_newer_version(self):
+        """语义化版本比较（修复旧版字符串比较 bug）"""
+        from lank.utils import is_newer_version
+        self.assertTrue(is_newer_version("1.10", "1.9"))     # 字符串比较会误判
+        self.assertFalse(is_newer_version("1.9", "1.10"))
+        self.assertFalse(is_newer_version("1.2.3", "1.2.3"))
+        self.assertTrue(is_newer_version("v2.0", "1.9.9"))
+        self.assertTrue(is_newer_version("1.2.4", "1.2.3"))
+        self.assertFalse(is_newer_version("", "1.0"))
+
 
 class TestUsage(unittest.TestCase):
-    """token 用量累加（不联网，构造假响应对象）"""
+    """token 用量累加（不联网，构造假响应对象）
+
+    隔离：拦截 record_token_usage，避免单测污染用户 ~/.lank/stats.json。
+    """
+
+    def setUp(self):
+        from unittest import mock
+        import lank.utils as u
+        self._p = mock.patch.object(u, "record_token_usage")
+        self.rec = self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
 
     def _mk_client(self):
         from lank.ai_client import AIClient
@@ -120,6 +142,15 @@ class TestUsage(unittest.TestCase):
         c._record_usage_dict(None)
         self.assertEqual(c.total_tokens, 0)
         self.assertEqual(c.total_api_calls, 0)
+        self.rec.assert_not_called()
+
+    def test_record_usage_persists_incrementally(self):
+        """修复：每条有 token 的响应都增量落盘（覆盖 TUI 交互路径）"""
+        c = self._mk_client()
+        c._record_usage_dict({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+        self.rec.assert_called_once_with(10, 5, 15)
+        c._record_usage_dict({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        self.assertEqual(self.rec.call_count, 1)   # total<=0 不落盘
 
 
 class TestVector(unittest.TestCase):
@@ -452,6 +483,14 @@ class TestMemory(unittest.TestCase):
         c = import_memories(str(self.tmp / "nonexist.json"))
         self.assertEqual(c["error"], 1)
         self.assertEqual(c["facts"], 0)
+
+    def test_memory_search_tool_includes_procedure(self):
+        """agent 主动回忆工具 memory_search 能取到第4层可复用流程"""
+        self.ms.add_procedure(
+            "记忆搜索流程验收", [{"title": "步A", "action": "a", "acceptance": "ok"}])
+        from lank.tools.memory_tools import memory_search
+        r = memory_search("记忆搜索流程验收")
+        self.assertIn("流程", r)
 
 
 class TestChatApp(unittest.TestCase):

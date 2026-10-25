@@ -5,7 +5,9 @@ memory_search / memory_recall / memory_remember / memory_forget
 
 from typing import Optional
 
-from ..memory import add_fact, remove_fact, search_facts, search_memories
+from ..memory import (
+    add_fact, remove_fact, search_facts, search_memories, search_procedures,
+)
 from . import register_tool
 
 
@@ -14,14 +16,22 @@ def _format_results(results) -> str:
         return "（未找到相关记忆）"
     lines = [f"找到 {len(results)} 条相关记忆:", ""]
     for r in results:
-        tag = "📜" if r.get("kind") == "summary" else "🧠"
-        lines.append(f"- {tag} {r.get('text', '')}")
+        kind = r.get("kind")
+        if kind == "procedure":
+            steps = [s for s in r.get("steps", []) if isinstance(s, dict)]
+            seq = " → ".join(str(s.get("title", "")) for s in steps)
+            lines.append(
+                f"- 🔁 流程: {r.get('goal', '')}（用过{r.get('use_count', 1)}次）: {seq}"
+            )
+        else:
+            tag = "📜" if kind == "summary" else "🧠"
+            lines.append(f"- {tag} {r.get('text', '')}")
     return "\n".join(lines)
 
 
 def memory_search(query: str, top_k: int = 5) -> str:
-    """检索相关历史会话与长期事实"""
-    results = search_memories(query, top_k)
+    """检索相关历史会话、长期事实与可复用流程"""
+    results = search_memories(query, top_k) + search_procedures(query)
     return _format_results(results)
 
 
@@ -50,7 +60,7 @@ def memory_forget(fact_id: str) -> str:
 
 register_tool(
     name="memory_search",
-    description="检索相关的历史对话与长期记忆（主动回忆用）",
+    description="检索相关的历史对话、长期记忆与可复用流程（主动回忆用）",
     func=memory_search,
     parameters=[
         {"name": "query", "type": "string", "description": "检索关键词"},

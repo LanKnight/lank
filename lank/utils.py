@@ -319,6 +319,30 @@ def export_conversation(messages: List[Dict[str, Any]], format: str = "markdown"
 
 # ===== 版本检查 =====
 
+
+def _ver_key(v: str) -> List[int]:
+    """将版本号解析为整数列表：去掉前缀 v、每段取前导数字、非数字段记 0"""
+    parts: List[int] = []
+    for seg in str(v or "").strip().lstrip("vV").split("."):
+        num = ""
+        for ch in seg:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        parts.append(int(num) if num else 0)
+    return parts or [0]
+
+
+def is_newer_version(latest: str, current: str) -> bool:
+    """语义化版本比较（修复旧版字符串比较 bug："1.10" 不再被误判为小于 "1.9"）。纯函数、可离线单测。"""
+    a, b = _ver_key(latest), _ver_key(current)
+    n = max(len(a), len(b))
+    a = a + [0] * (n - len(a))
+    b = b + [0] * (n - len(b))
+    return a > b
+
+
 def check_for_updates() -> str:
     """检查更新（简单实现）"""
     try:
@@ -335,7 +359,7 @@ def check_for_updates() -> str:
             from . import __version__
             current_version = __version__
             
-            if latest_version and latest_version > current_version:
+            if latest_version and is_newer_version(latest_version, current_version):
                 return f"📢 发现新版本: v{latest_version} (当前: v{current_version})\n   请执行: pip install --upgrade lank"
             else:
                 return f"✅ 当前已是最新版本: v{current_version}"
