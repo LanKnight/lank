@@ -9,7 +9,6 @@
 """
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -247,15 +246,10 @@ def _load_allowlist() -> Dict[str, Any]:
 
 
 def _save_allowlist(data: Dict[str, Any]) -> None:
-    """保存白名单（原子写）"""
-    ALLOWLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = ALLOWLIST_FILE.with_suffix(".json.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, ALLOWLIST_FILE)
-    except Exception as e:
-        logger.error("保存白名单失败: %s", e)
+    """保存白名单（复用原子写：临时文件带随机后缀 + os.replace，防并发互相截断）"""
+    from ..utils import atomic_write_json
+    if not atomic_write_json(ALLOWLIST_FILE, data):
+        logger.error("保存白名单失败: %s", ALLOWLIST_FILE)
 
 
 def _prefix_match(pattern: str, hint: str) -> bool:

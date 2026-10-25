@@ -609,20 +609,27 @@ class ChatApp:
                     n_p = len(load_procedures())
                     out.append(f"已导出记忆→ {path}（{n_f} 条事实、{n_p} 个流程）")
                 elif sub == "import":
-                    if not sub_arg.strip():
-                        out.append("用法: /memory import <文件路径>")
+                    argv = sub_arg.split()
+                    imode = "merge"
+                    if argv and argv[-1].lower() in ("merge", "overwrite"):
+                        imode = argv[-1].lower()
+                        argv = argv[:-1]
+                    ipath = " ".join(argv).strip()
+                    if not ipath:
+                        out.append("用法: /memory import <文件路径> [merge|overwrite]")
                     else:
-                        c = import_memories(sub_arg.strip())
+                        c = import_memories(ipath, mode=imode)
                         if c.get("error"):
                             out.append("⚠️ 导入失败：文件不存在或格式非法")
                         else:
+                            tag = "覆盖" if imode == "overwrite" else "合并去重"
                             out.append(
-                                f"已导入：事实 {c['facts']}、流程 {c['procedures']}、"
-                                f"摘要 {c['summaries']}（已自动去重合并）"
+                                f"已导入({tag})：事实 {c['facts']}、流程 {c['procedures']}、"
+                                f"摘要 {c['summaries']}"
                             )
                 else:
                     out.append(
-                        "用法: /memory [list|search <关键词>|forget <编号>|export [路径]|import <路径>]"
+                        "用法: /memory [list|search <关键词>|forget <编号>|export [路径]|import <路径> [merge|overwrite]]"
                     )
             except Exception:
                 out.append("记忆操作失败")

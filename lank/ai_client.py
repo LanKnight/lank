@@ -385,6 +385,20 @@ class AIClient:
                 delay *= 2
         raise RuntimeError("unreachable")
 
+    def _context_budget_guard(self, system_msg: Dict[str, Any],
+                              messages: List[Dict[str, Any]]) -> Optional[str]:
+        """单步上下文字符预算护栏：超限返回警告文本，否则 None（防 token 炸弹）。
+
+        预算 max_step_context_chars<=0 时禁用。纯本地判定，不联网。
+        """
+        budget = int(get_config("max_step_context_chars", 120000))
+        if budget > 0 and _messages_char_len([system_msg] + messages) > budget:
+            return (
+                f"⚠️ 单步上下文已达字符预算上限 ({budget})，"
+                "提前结束工具循环以避免超额消耗，请缩小任务范围或分批处理。"
+            )
+        return None
+
     def _run_tool_loop(
         self,
         messages: List[Dict[str, Any]],
@@ -400,6 +414,11 @@ class AIClient:
             (final_text_content, updated_messages)
         """
         # 发送当前 messages（含首轮 tool_calls + tool results）获取下一轮响应
+        # 护栏也覆盖首轮：首条工具结果可能已把上下文撑爆
+        warning = self._context_budget_guard(system_msg, messages)
+        if warning:
+            messages.append({"role": "assistant", "content": warning})
+            return warning, messages
         response = self._create_completion([system_msg] + messages, stream=False)
         self._record_usage(response)
         choice = response.choices[0]
@@ -467,12 +486,8 @@ class AIClient:
 
             # 继续获取下一轮
             # ── 稳健性护栏：单步上下文字符预算超限则早停，防 token 炸弹 ──
-            budget = int(get_config("max_step_context_chars", 120000))
-            if budget > 0 and _messages_char_len([system_msg] + messages) > budget:
-                warning = (
-                    f"⚠️ 单步上下文已达字符预算上限 ({budget})，"
-                    "提前结束工具循环以避免超额消耗，请缩小任务范围或分批处理。"
-                )
+            warning = self._context_budget_guard(system_msg, messages)
+            if warning:
                 messages.append({"role": "assistant", "content": warning})
                 return warning, messages
 

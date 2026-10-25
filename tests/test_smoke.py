@@ -188,6 +188,20 @@ class TestStepBudget(unittest.TestCase):
         )
         self.assertEqual(_messages_char_len([]), 0)
 
+    def test_context_budget_guard(self):
+        """首轮/续轮统一的预算护栏：超限返回警告，预算<=0 禁用"""
+        from unittest import mock
+        import lank.ai_client as ac
+        c = ac.AIClient()
+        sys_msg = {"role": "system", "content": "s"}
+        big = [{"role": "user", "content": "x" * 100}]
+        with mock.patch.object(ac, "get_config",
+                               lambda k, d=None: 50 if k == "max_step_context_chars" else d):
+            self.assertIsNotNone(c._context_budget_guard(sys_msg, big))
+        with mock.patch.object(ac, "get_config",
+                               lambda k, d=None: 0 if k == "max_step_context_chars" else d):
+            self.assertIsNone(c._context_budget_guard(sys_msg, big))
+
 
 class TestAgentTypes(unittest.TestCase):
     def test_plan_roundtrip(self):
@@ -491,6 +505,29 @@ class TestMemory(unittest.TestCase):
         from lank.tools.memory_tools import memory_search
         r = memory_search("记忆搜索流程验收")
         self.assertIn("流程", r)
+
+    def test_import_overwrite_mode(self):
+        """overwrite 模式：先清空本地事实/流程再回灌快照（旧内容不再残留）"""
+        import json
+        from lank.memory import import_memories
+        self.ms.add_fact("本地旧事实", source="auto")
+        self.ms.add_procedure("本地旧流程",
+                              [{"title": "旧", "action": "x", "acceptance": "y"}])
+        snap = self.tmp / "snap.json"
+        snap.write_text(json.dumps({
+            "facts": {"fact_1": {"text": "快照事实A", "source": "explicit", "importance": 3}},
+            "procedures": {"proc_1": {"goal": "快照流程B",
+                                      "steps": [{"title": "B", "action": "b", "acceptance": "ok"}],
+                                      "keywords": [], "review_criteria": ""}},
+            "summaries": {},
+        }, ensure_ascii=False), encoding="utf-8")
+        c = import_memories(str(snap), mode="overwrite")
+        self.assertEqual(c["facts"], 1)
+        self.assertEqual(c["procedures"], 1)
+        facts_text = " ".join(e.get("text", "") for e in self.ms.load_facts().values())
+        self.assertIn("快照事实A", facts_text)
+        self.assertNotIn("本地旧事实", facts_text)   # 旧事实已被清空
+        self.assertEqual(len(self.ms.load_procedures()), 1)
 
 
 class TestChatApp(unittest.TestCase):

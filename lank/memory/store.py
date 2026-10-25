@@ -476,11 +476,14 @@ def export_memories(path: Optional[str] = None) -> str:
     return str(out)
 
 
-def import_memories(path: str) -> Dict[str, int]:
-    """从导出 JSON 导入记忆：逐条走 add_* 合并（天然近似去重），返回各类别导入计数。
+def import_memories(path: str, mode: str = "merge") -> Dict[str, int]:
+    """从导出 JSON 导入记忆，返回各类别导入计数。
 
+    mode="merge"（默认）：逐条走 add_* 合并，事实/流程自然近似去重；摘要按 session_id 不覆盖。
+    mode="overwrite"：先清空本地事实与流程再导入快照；摘要按 session_id 覆盖。
     失败（文件不存在/非法 JSON）时返回带 error 的零计数，绝不抛异常中断主流程。
     """
+    global _facts_cache, _facts_mtime, _procs_cache, _procs_mtime
     counts = {"facts": 0, "procedures": 0, "summaries": 0, "error": 0}
     p = Path(path)
     if not p.exists():
@@ -494,6 +497,16 @@ def import_memories(path: str) -> Dict[str, int]:
     if not isinstance(data, dict):
         counts["error"] = 1
         return counts
+
+    if mode == "overwrite":
+        # 先置空事实/流程（加锁写空 + 同步失效缓存），再用快照回灌
+        with _store_lock:
+            atomic_write_json(FACTS_FILE, {})
+            _facts_cache = {}
+            _facts_mtime = _file_mtime(FACTS_FILE)
+            atomic_write_json(PROCEDURES_FILE, {})
+            _procs_cache = {}
+            _procs_mtime = _file_mtime(PROCEDURES_FILE)
 
     for _k, f in (data.get("facts") or {}).items():
         if isinstance(f, dict) and f.get("text"):
@@ -516,14 +529,17 @@ def import_memories(path: str) -> Dict[str, int]:
 
     existing = load_summaries()
     for sid, s in (data.get("summaries") or {}).items():
-        if sid not in existing and isinstance(s, dict) and s.get("summary"):
-            add_summary(
-                sid,
-                str(s.get("timestamp", "")),
-                str(s.get("summary", "")),
-                list(s.get("keywords", []) or []),
-                int(s.get("messages_count", s.get("message_count", 0)) or 0),
-            )
-            counts["summaries"] += 1
+        if not isinstance(s, dict) or not s.get("summary"):
+            continue
+        if mode != "overwrite" and sid in existing:
+            continue
+        add_summary(
+            sid,
+            str(s.get("timestamp", "")),
+            str(s.get("summary", "")),
+            list(s.get("keywords", []) or []),
+            int(s.get("messages_count", s.get("message_count", 0)) or 0),
+        )
+        counts["summaries"] += 1
 
     return counts

@@ -3,8 +3,6 @@
 memory_search / memory_recall / memory_remember / memory_forget
 """
 
-from typing import Optional
-
 from ..memory import (
     add_fact, remove_fact, search_facts, search_memories, search_procedures,
 )
