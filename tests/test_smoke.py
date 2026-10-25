@@ -399,7 +399,9 @@ class TestMemory(unittest.TestCase):
         self.assertTrue(r)
         self.assertEqual(r[0]["kind"], "procedure")
         from lank.memory.retriever import get_relevant_context
-        self.assertIn("可复用流程", get_relevant_context("葡萄酒 分析"))
+        ctx = get_relevant_context("葡萄酒 分析")
+        self.assertIn("可复用流程", ctx)
+        self.assertIn("规划时请优先参考", ctx)   # 可操作的规划指引
         # 空查询不注入流程段
         self.assertNotIn("可复用流程", get_relevant_context(""))
 
@@ -420,6 +422,36 @@ class TestMemory(unittest.TestCase):
             review_criteria="")
         loop._record_procedure(plan2)
         self.assertEqual(len(self.ms.load_procedures()), n)
+
+    def test_export_import_memories(self):
+        """导出快照→清空→导入回灌（逐条 add_* 去重），计数正确"""
+        from lank.memory import export_memories, import_memories
+        self.ms.add_fact("导出测试事实甲", source="explicit", importance=2)
+        pid = self.ms.add_procedure(
+            "导出流程目标", [{"title": "步骤A", "action": "a", "acceptance": "ok"}])
+        self.assertTrue(pid)
+        path = export_memories(str(self.tmp / "backup.json"))
+        self.assertTrue(Path(path).exists())
+        # 清空当前记忆（删文件+重置缓存）
+        self.ms.FACTS_FILE.unlink(missing_ok=True)
+        self.ms.PROCEDURES_FILE.unlink(missing_ok=True)
+        self.ms._facts_cache = None
+        self.ms._facts_mtime = None
+        self.ms._procs_cache = None
+        self.ms._procs_mtime = None
+        self.assertEqual(len(self.ms.load_facts()), 0)
+        c = import_memories(path)
+        self.assertEqual(c["facts"], 1)
+        self.assertEqual(c["procedures"], 1)
+        self.assertEqual(len(self.ms.load_facts()), 1)
+        self.assertEqual(len(self.ms.load_procedures()), 1)
+
+    def test_import_missing_file_safe(self):
+        """导入不存在/非法文件：返回 error 计数且不抛异常"""
+        from lank.memory import import_memories
+        c = import_memories(str(self.tmp / "nonexist.json"))
+        self.assertEqual(c["error"], 1)
+        self.assertEqual(c["facts"], 0)
 
 
 class TestChatApp(unittest.TestCase):

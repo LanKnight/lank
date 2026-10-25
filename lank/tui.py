@@ -537,7 +537,7 @@ class ChatApp:
   /resume   <ID> 恢复历史会话（回滚到之前的聊天记录）
   /export   [json] 导出对话
   /stats    使用统计
-  /memory   list|search <关键词>|forget <编号> 记忆管理
+  /memory   list|search|forget|export|import 记忆管理
   /theme    [名称] 切换主题
   /model    [名称] 切换模型
   /todo     list|add 任务|done 编号|del 编号
@@ -565,6 +565,7 @@ class ChatApp:
                 from .memory import (
                     load_facts, load_procedures, remove_fact, remove_procedure,
                     search_memories, search_procedures,
+                    export_memories, import_memories,
                 )
                 sub_parts = cmd_arg.split(maxsplit=1)
                 sub = sub_parts[0].lower() if sub_parts else "list"
@@ -602,8 +603,27 @@ class ChatApp:
                     else:
                         ok = remove_fact(mid) or remove_procedure(mid)
                     out.append(f"已删除 {mid}" if ok else f"未找到记忆 {mid}")
+                elif sub == "export":
+                    path = export_memories(sub_arg.strip() or None)
+                    n_f = len(load_facts())
+                    n_p = len(load_procedures())
+                    out.append(f"已导出记忆→ {path}（{n_f} 条事实、{n_p} 个流程）")
+                elif sub == "import":
+                    if not sub_arg.strip():
+                        out.append("用法: /memory import <文件路径>")
+                    else:
+                        c = import_memories(sub_arg.strip())
+                        if c.get("error"):
+                            out.append("⚠️ 导入失败：文件不存在或格式非法")
+                        else:
+                            out.append(
+                                f"已导入：事实 {c['facts']}、流程 {c['procedures']}、"
+                                f"摘要 {c['summaries']}（已自动去重合并）"
+                            )
                 else:
-                    out.append("用法: /memory [list|search <关键词>|forget <编号>]")
+                    out.append(
+                        "用法: /memory [list|search <关键词>|forget <编号>|export [路径]|import <路径>]"
+                    )
             except Exception:
                 out.append("记忆操作失败")
         elif cmd == "/theme":

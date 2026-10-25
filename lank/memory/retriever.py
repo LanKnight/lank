@@ -250,19 +250,24 @@ def get_relevant_context(query: str = "", top_k: Optional[int] = None) -> str:
         for r in summaries:
             lines.append(f"- 📜 {r.get('text', '')[:200]}")
 
-    # 可复用流程（程序性记忆）：仅在有查询且开启时注入，帮助复用过往成功套路
+    # 可复用流程（程序性记忆）：仅在有查询且开启时注入，作为规划参考
     if query and get_config("memory_procedural_enabled", True):
         try:
             procs = search_procedures(query)
             if procs:
                 lines.append("\n## 可复用流程（过往成功套路）")
+                lines.append("（若当前任务与下列目标相近，规划时请优先参考其步骤顺序与验收标准）")
                 for p in procs:
-                    steps = p.get("steps", [])
-                    seq = " → ".join(
-                        str(s.get("title", "")) for s in steps if isinstance(s, dict)
-                    )
+                    steps = [s for s in p.get("steps", []) if isinstance(s, dict)]
                     used = p.get("use_count", 1)
-                    lines.append(f"- 🔁 {p.get('goal', '')[:120]}（用过{used}次）: {seq[:200]}")
+                    lines.append(
+                        f"- 🔁 目标：{p.get('goal', '')[:120]}（用过{used}次）"
+                    )
+                    for j, s in enumerate(steps, 1):
+                        title = str(s.get("title", ""))[:80]
+                        acc = str(s.get("acceptance", ""))[:60]
+                        tail = f" — 验收:{acc}" if acc else ""
+                        lines.append(f"    {j}. {title}{tail}")
         except Exception:
             pass
 

@@ -451,3 +451,79 @@ def remove_procedure(proc_id: str) -> bool:
             atomic_write_json(PROCEDURES_FILE, procs)
             return True
         return False
+
+
+# ═══════════════ 记忆导入 / 导出（迁移与备份） ═══════════════
+
+
+def export_memories(path: Optional[str] = None) -> str:
+    """将长期事实/会话摘要/可复用流程导出为单个 JSON，返回落盘路径。
+
+    不传 path 则写入 MEMORY_DIR 下带时间戳的文件；导出为快照，便于迁移/备份。
+    """
+    data = {
+        "version": 1,
+        "exported_at": datetime.now().isoformat(),
+        "facts": load_facts(),
+        "summaries": load_summaries(),
+        "procedures": load_procedures(),
+    }
+    if path:
+        out = Path(path)
+    else:
+        out = MEMORY_DIR / f"memory_export_{datetime.now():%Y%m%d_%H%M%S}.json"
+    atomic_write_json(out, data)
+    return str(out)
+
+
+def import_memories(path: str) -> Dict[str, int]:
+    """从导出 JSON 导入记忆：逐条走 add_* 合并（天然近似去重），返回各类别导入计数。
+
+    失败（文件不存在/非法 JSON）时返回带 error 的零计数，绝不抛异常中断主流程。
+    """
+    counts = {"facts": 0, "procedures": 0, "summaries": 0, "error": 0}
+    p = Path(path)
+    if not p.exists():
+        counts["error"] = 1
+        return counts
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, IOError, UnicodeDecodeError):
+        counts["error"] = 1
+        return counts
+    if not isinstance(data, dict):
+        counts["error"] = 1
+        return counts
+
+    for _k, f in (data.get("facts") or {}).items():
+        if isinstance(f, dict) and f.get("text"):
+            add_fact(
+                str(f["text"]),
+                source=str(f.get("source", "auto")),
+                importance=int(f.get("importance", 1) or 1),
+            )
+            counts["facts"] += 1
+
+    for _k, pr in (data.get("procedures") or {}).items():
+        if isinstance(pr, dict) and pr.get("goal") and pr.get("steps"):
+            add_procedure(
+                str(pr["goal"]),
+                list(pr["steps"]),
+                keywords=list(pr.get("keywords", []) or []),
+                review_criteria=str(pr.get("review_criteria", "")),
+            )
+            counts["procedures"] += 1
+
+    existing = load_summaries()
+    for sid, s in (data.get("summaries") or {}).items():
+        if sid not in existing and isinstance(s, dict) and s.get("summary"):
+            add_summary(
+                sid,
+                str(s.get("timestamp", "")),
+                str(s.get("summary", "")),
+                list(s.get("keywords", []) or []),
+                int(s.get("messages_count", s.get("message_count", 0)) or 0),
+            )
+            counts["summaries"] += 1
+
+    return counts
