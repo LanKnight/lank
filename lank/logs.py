@@ -14,6 +14,9 @@ LOG_FILE = LOG_DIR / "lank.log"
 
 _configured = False
 _init_lock = threading.Lock()
+# 仅终端(stderr) handler 的引用：RotatingFileHandler 也是 StreamHandler 子类，
+# 不能用 isinstance(h, StreamHandler) 区分，否则会误伤日志文件 handler。
+_console_handler: logging.Handler = None
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -49,6 +52,9 @@ def setup_logging(level: int = logging.INFO) -> None:
         if not root.handlers:
             for h in handlers:
                 root.addHandler(h)
+        # 记录终端 handler 引用（排除文件 handler），供 set_console_logging 精准调整
+        global _console_handler
+        _console_handler = console_handler
         _configured = True
 
 
@@ -60,10 +66,19 @@ def set_console_logging(enabled: bool) -> None:
     （INFO 等低频日志只进文件，不打扰终端）。日志文件不受影响。
     """
     setup_logging()
-    root = logging.getLogger("lank")
-    for h in root.handlers:
-        if isinstance(h, logging.StreamHandler):
-            h.setLevel(logging.WARNING if enabled else logging.CRITICAL + 10)
+    # 只调整终端 handler；文件 handler（RotatingFileHandler 亦为 StreamHandler 子类）
+    # 保持继承 root 级别，确保日志文件始终按 INFO 记录、不受 TUI 开关影响。
+    target = _console_handler
+    if target is None:
+        root = logging.getLogger("lank")
+        target = next(
+            (h for h in root.handlers
+             if isinstance(h, logging.StreamHandler)
+             and not isinstance(h, logging.FileHandler)),
+            None,
+        )
+    if target is not None:
+        target.setLevel(logging.WARNING if enabled else logging.CRITICAL + 10)
 
 
 def get_logger(name: str = "lank") -> logging.Logger:

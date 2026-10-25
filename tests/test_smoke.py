@@ -203,6 +203,26 @@ class TestStepBudget(unittest.TestCase):
             self.assertIsNone(c._context_budget_guard(sys_msg, big))
 
 
+class TestLogging(unittest.TestCase):
+    """终端日志开关不得误伤文件 handler（RotatingFileHandler 亦是 StreamHandler 子类）"""
+
+    def test_set_console_logging_preserves_file_handler(self):
+        import logging
+        from lank import logs
+        logs.setup_logging()
+        root = logging.getLogger("lank")
+        file_h = next((h for h in root.handlers
+                       if isinstance(h, logging.FileHandler)), None)
+        self.assertIsNotNone(file_h)
+        before = file_h.level
+        logs.set_console_logging(False)
+        self.assertEqual(file_h.level, before)              # 文件 handler 级别不变
+        self.assertGreater(logs._console_handler.level, logging.CRITICAL)  # 终端静默
+        logs.set_console_logging(True)
+        self.assertEqual(file_h.level, before)
+        self.assertEqual(logs._console_handler.level, logging.WARNING)
+
+
 class TestAgentTypes(unittest.TestCase):
     def test_plan_roundtrip(self):
         from lank.agent import Plan, Step
