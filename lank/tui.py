@@ -365,16 +365,20 @@ class ChatApp:
             # 保存会话（会话内复用 session_id）+ 长会话增量滚动总结
             try:
                 from .memory import save_conversation, needs_rollup, finalize_session
-                if self.ai_history:
-                    sid = save_conversation(self.ai_history, session_id=self.session_id)
+                # 取快照再传给总结守护线程：该线程生命周期长于本方法，
+                # 若直接传 live self.ai_history，用户下一轮 append 会与其迭代产生数据竞争。
+                with self._lock:
+                    snapshot = list(self.ai_history)
+                if snapshot:
+                    sid = save_conversation(snapshot, session_id=self.session_id)
                     if sid:
                         self.session_id = sid
                     if self.session_id and self.session_id not in self._finalized_sessions \
-                            and needs_rollup(self.ai_history):
+                            and needs_rollup(snapshot):
                         self._finalized_sessions.add(self.session_id)
                         threading.Thread(
                             target=finalize_session,
-                            args=(self.session_id, self.ai_history),
+                            args=(self.session_id, snapshot),
                             daemon=True,
                         ).start()
             except Exception:
