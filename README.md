@@ -35,10 +35,12 @@
 
 ### 🧠 个性化记忆系统（`lank/memory/`）
 - 自动保存对话历史 + 跨会话记忆恢复
-- **四层记忆架构**：工作记忆（任务内）/ 情景记忆（会话摘要）/ 语义记忆（事实与偏好）/ 程序性记忆（规划中）
+- **四层记忆架构**：工作记忆（任务内）/ 情景记忆（会话摘要）/ 语义记忆（事实与偏好）/ 程序性记忆（可复用流程，任务成功后自动沉淀、规划时按相关性注入）
 - **会话滚动摘要**：会话结束自动总结；长会话按 token 阈值增量压缩
 - **自动画像抽取**：从对话中自动学习你的偏好与事实（`memory_auto_extract`），也可显式 `memory_remember`
-- **关键词加权检索**：按 相关性×新鲜度×重要性 注入相关记忆（「提前的加载」）
+- **关键词加权检索**：按 相关性×新鲜度×重要性 注入相关记忆（「提前的加载」），近似去重合并
+- **可选本地向量检索**：安装 `fastembed` 并开启 `memory_vector_enabled` 后，检索叠加余弦相似度增强（本地 ONNX 推理、零网络 API；未安装自动降级关键词路径）
+- TUI 内 `/memory` 命令：查看 / 搜索 / 删除 / 导入导出记忆
 
 ### 🎨 全屏聊天界面（`lank tui` / `lank ai`）
 - **输入框固定在屏幕最底部**，消息内容向上滚动堆积（不再清屏闪烁）
@@ -50,7 +52,7 @@
 
 ### 🎪 更多功能
 - **🎨 主题系统**：5 种主题（默认/暗色/赛博朋克/黑客/日落），`/theme <name>` 实时切换
-- **📊 使用统计**：`/stats` 查看会话数、消息数、工具调用次数
+- **📊 使用统计**：`/stats` 查看会话数、消息数、工具调用次数与 token 用量
 - **💾 对话导出**：`/export` 导出为 Markdown 或 JSON
 - **🔄 版本检查**：`/update` 检查 GitHub 最新版本
 - **📝 待办管理**：`/todo` 在聊天中直接管理待办
@@ -64,6 +66,7 @@
 - **rich >= 12.0** - 终端美化和格式化输出
 - **prompt_toolkit >= 3.0** - 交互式命令行输入
 - **openai >= 1.0.0**（可选）- AI API 调用
+- **fastembed**（可选）- 本地向量嵌入检索增强；未安装时记忆检索自动降级为关键词路径
 
 ---
 
@@ -115,6 +118,7 @@ lank tui
 - 输入 `/model [名称]` 显示或切换 AI 模型
 - 输入 `/todo list|add|done|del` 管理待办
 - 输入 `/auto` 切换自动模式（计划自动确认、审核自动通过）
+- 输入 `/memory [list|search|del|export|import]` 管理长期记忆
 - 输入 `/update` 检查更新
 - 输入 `exit` 退出
 
@@ -142,6 +146,7 @@ lank ai 帮我计算 123 * 456
 - 输入 `/model [名称]` 显示或切换 AI 模型
 - 输入 `/export [json]` 导出对话
 - 输入 `/todo list|add|done|del` 管理待办
+- 输入 `/memory [list|search|del|export|import]` 管理长期记忆
 - 输入 `/update` 检查更新
 - 输入 `exit` 退出
 
@@ -205,19 +210,30 @@ lank set reset
 | `memory_enabled` | 记忆功能 | `true` |
 | `max_history` | 最大历史记录数（会话滑动窗口） | `100` |
 | `auto_mode` | 自动模式（计划自动确认、审核自动通过） | `false` |
-| `max_plan_steps` | 单计划最大步骤数 | `10` |
-| `max_review_rounds` | 审核未达标最大迭代轮数 | `3` |
-| `plan_prompt` / `exec_prompt` / `review_prompt` | 覆盖各阶段系统提示词 | - |
-| `tool_output_limit` | 工具结果截断字符数 | `8192` |
-| `cmd_output_limit` | 命令输出截断字符数 | `20480` |
+| `test_mode` | 测试/演示模式（工具免确认、计划终审自动通过；危险命令黑名单仍拦截） | `false` |
+| `max_plan_steps` | 单计划最大步骤数 | `8` |
+| `max_review_rounds` | 审核未达标最大迭代轮数 | `2` |
+| `max_tool_rounds` | 单次请求最大连续工具调用轮数 | `25` |
+| `plan_prompt` / `exec_prompt` / `review_prompt` | 覆盖各阶段系统提示词（支持字面花括号） | - |
+| `tool_output_limit` | 工具结果截断字符数 | `4096` |
+| `cmd_output_limit` | 命令输出截断字符数 | `6144` |
 | `cmd_timeout` | 命令执行超时（秒） | `60` |
 | `cmd_allowlist` | 命令白名单（可自动执行） | `[]` |
 | `api_max_retries` | API 429/5xx 退避重试次数 | `2` |
 | `memory_summary_max_chars` | 会话摘要长度上限 | `2000` |
 | `memory_long_session_threshold` | 长会话增量总结 token 阈值 | `20000` |
 | `memory_top_k` | 记忆检索注入条数 | `5` |
+| `memory_relevance_weight` / `memory_freshness_weight` / `memory_importance_weight` | 检索评分权重 | `0.4` / `0.3` / `0.3` |
 | `memory_max_facts` | 语义记忆容量上限 | `200` |
 | `memory_auto_extract` | 会话后自动抽取画像 | `true` |
+| `memory_profile_top_k` | 注入提示词的用户画像事实条数上限 | `12` |
+| `memory_max_inject_chars` | 记忆注入文本总长上限（防 token 炸弹） | `2500` |
+| `memory_dedup_similarity` | 事实近似去重相似度阈值 | `0.85` |
+| `memory_procedural_enabled` | 任务成功后沉淀可复用流程（程序性记忆） | `true` |
+| `memory_procedure_top_k` | 规划阶段注入可复用流程条数上限 | `3` |
+| `memory_vector_enabled` | 启用本地向量检索增强（需 fastembed，未装自动降级） | `false` |
+| `memory_vector_model` | 本地嵌入模型名 | `Xenova/all-MiniLM-L6-v2` |
+| `max_step_context_chars` | 单步工具循环上下文累计字符预算护栏 | `120000` |
 
 ---
 
@@ -278,10 +294,11 @@ lank/
 │   │   └── context.py       # 工具与循环的通信上下文
 │   ├── memory/              # ★ 记忆子系统（原 memory.py 升级）
 │   │   ├── __init__.py      # 对外 API（兼容旧调用）
-│   │   ├── store.py         # 持久化（会话/摘要/事实/画像）
+│   │   ├── store.py         # 持久化（会话/摘要/事实/画像/程序性流程）
 │   │   ├── summarizer.py    # 会话总结器（结束总结 + 长会话增量）
 │   │   ├── extractor.py     # 画像抽取器
-│   │   ├── retriever.py     # 关键词加权检索器
+│   │   ├── retriever.py     # 关键词加权检索（可选叠加向量增强）
+│   │   ├── vector.py        # ★ 可选本地向量后端（fastembed，未装自动降级）
 │   │   └── forget.py        # 遗忘清理
 │   └── tools/               # 工具模块（23 个工具）
 │       ├── __init__.py      # 工具注册/调度/校验/截断/白名单
@@ -439,7 +456,7 @@ LANK 是一个**学习项目**——目标是亲手实现一个带 ReAct 框架�
 2. **按下方「代码阅读路线」读源码**——入口 `__main__.py` → `cli.py` → `agent/loop.py` 三步走
 3. **对照 git 提交历史学习演进**——每个 commit 对应一个功能或修复，看一个功能如何从无到有、又如何被审查修复（commit message 都写明了原因）
 4. **动手改**：照 `tools/plan_tools.py` 模板添加一个新工具、改 `agent/prompts.py` 提示词观察行为变化、给记忆检索换一种算法
-5. **跑测试**：`python -m unittest discover -s tests`——22 个冒烟测试覆盖核心逻辑，改代码后先跑测试再验证
+5. **跑测试**：`python -m unittest discover -s tests`——49 个冒烟测试全部离线可验证（零 API 依赖），改代码后先跑测试再验证
 
 ### 实际踩过的几个坑（都值得研究）
 
@@ -447,7 +464,11 @@ LANK 是一个**学习项目**——目标是亲手实现一个带 ReAct 框架�
 - **测试全绿但功能是假的**：reviewer 用了不执行工具的 `complete()`，`submit_review` 从未执行，测试 mock 恰好掩盖了真实行为——mock 要贴近真实调用链
 - **prompt_toolkit 滚动**：必须用 cursor 锚定机制，且行数计算要和渲染层用同一套算法（`split_lines`），自己推算行数必然对不上
 - **确认门 fail-open**：无回调时危险工具静默执行——安全默认必须 fail-closed，而不是"有回调才询问"
-- **全屏 UI 的日志**：后台线程的 warning 直接写 stderr 会打花备用屏幕，全屏期间要静默终端日志
+- **全屏 UI 的日志**：后台线程的 warning 直接写 stderr 会打花备用屏幕，全屏期间要静默终端日志；但静默只能针对 stderr handler——`FileHandler`/`RotatingFileHandler` 也是 `StreamHandler` 子类，用 isinstance 匹配会误伤日志文件
+- **可配置模板用 str.format()**：用户自定义提示词里写代码/JSON 示例（含字面 `{ }`）直接抛 KeyError 炸掉整个任务——对可被外部覆盖的模板只能替换已知占位符
+- **流式响应拿不到 token 用量**：不传 `stream_options={"include_usage": True}` 时流式 chunk 全不带 usage，token 统计永远为 0——/stats 与实际成本不可观测
+- **后台线程持有可变状态**：把 live 列表直接交给守护线程，线程生命周期长于提交方法时，下一轮 append 与迭代并发产生数据竞争——传快照，不传引用
+- **无上限增长的集合**：进程内"防重登记"类 set 随运行时长无限撑大——用有界 LRU（OrderedDict + 淘汰最旧）封住
 
 ---
 
@@ -537,7 +558,7 @@ register_tool(
 ```
 ~/.lank/
 ├── config.json          # 用户配置（API Key、模型、主题、ReAct/记忆参数等）
-├── stats.json           # 使用统计
+├── stats.json           # 使用统计（会话/消息/工具调用 + token 用量增量落盘）
 ├── todos.json           # 待办事项
 ├── allowlist.json       # 工具/命令白名单（确认时可永久放行）
 ├── logs/                # 日志（lank.log，滚动保留 3 份）
@@ -545,6 +566,7 @@ register_tool(
 │   ├── history/         # 原始会话 (YYYYMMDD_HHMMSS_xxxx.json)
 │   ├── summaries.json   # 情景记忆：会话摘要（LLM 生成）
 │   ├── facts.json       # 语义记忆：事实/偏好（来源/重要性/提及次数）
+│   ├── procedures.json  # 程序性记忆：可复用工作流/步骤模式
 │   └── profile.json     # 用户画像（由 facts 聚合，兼容旧格式）
 └── exports/             # 对话导出 (Markdown / JSON)
 ```

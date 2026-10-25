@@ -289,6 +289,23 @@ class TestLogging(unittest.TestCase):
         self.assertEqual(logs._console_handler.level, logging.WARNING)
 
 
+class TestTUIBoundedFinalizer(unittest.TestCase):
+    """防重登记集合有界 LRU（防超长运行实例无上限增长）"""
+
+    def test_mark_finalized_bounded_lru(self):
+        from collections import OrderedDict
+        from types import SimpleNamespace
+        from lank.tui import ChatApp
+        obj = SimpleNamespace(_finalized_sessions=OrderedDict())
+        for i in range(300):
+            ChatApp._mark_finalized(obj, f"s{i}")
+        self.assertLessEqual(len(obj._finalized_sessions), 256)   # 有界
+        self.assertNotIn("s0", obj._finalized_sessions)           # 最旧被淘汰
+        self.assertIn("s299", obj._finalized_sessions)            # 最新保留
+        ChatApp._mark_finalized(obj, "s299")                       # 重复登记不报错、位置刷新
+        self.assertEqual(len(obj._finalized_sessions), 256)
+
+
 class TestPrompts(unittest.TestCase):
     """提示词渲染对字面花括号免疫（旧 .format 会崩）"""
 

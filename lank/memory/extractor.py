@@ -137,7 +137,8 @@ def extract_and_update_profile(
     """抽取事实并写入语义记忆（含去重合并）
 
     Returns:
-        新增事实数
+        处理条数（含新增与近似去重合并，非严格“新增数”——add_fact
+        命中相似旧事实时只累加提及次数合并，同样计入本返回值）
     """
     from .store import add_fact
     facts = extract_facts(messages, client=client)
@@ -148,7 +149,7 @@ def extract_and_update_profile(
             add_fact(text, source="auto", importance=f.get("importance", 1))
             added += 1
     if added:
-        logger.info("画像更新: 新增/合并 %d 条事实", added)
+        logger.info("画像更新: 处理 %d 条事实（新增/合并）", added)
         # 遗忘策略：抽取后按容量上限淘汰最不重要的事实
         try:
             from .forget import prune_facts

@@ -10,6 +10,7 @@ TUI 全屏聊天界面 - 输入框固定底部，消息内容向上滚动（可�
 
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import get_config, set_config
@@ -71,7 +72,9 @@ class ChatApp:
         self._pending_ask: Optional[Dict[str, Any]] = None  # 待回答的交互
         self._back_lines = 0      # 回看行数（0=底部），PageUp/PageDown 调整
         self._ai_running = False  # 单一 AI 运行互斥（防止并发线程踩踏）
-        self._finalized_sessions = set()  # 已做过会话总结的 session（防重复 LLM 调用）
+        # 已做过会话总结的 session（防重复 LLM 调用）。有界 LRU：防止超长
+        # 运行实例中该集合无上限增长（每个 /clear 或新会话都会产生新 id）。
+        self._finalized_sessions: "OrderedDict[str, None]" = OrderedDict()
         self._last_stream_invalidate = 0.0  # 流式输出节流：上次刷新时间戳
         self._lock = threading.Lock()
 
@@ -81,6 +84,13 @@ class ChatApp:
         self.input_buffer: Optional[Buffer] = None
         self.layout = None
         self._pt_ok = PT_AVAILABLE
+
+    def _mark_finalized(self, session_id: str) -> None:
+        """登记已总结的 session（有界 LRU，满 256 淘汰最旧登记）"""
+        self._finalized_sessions[session_id] = None
+        self._finalized_sessions.move_to_end(session_id)
+        while len(self._finalized_sessions) > 256:
+            self._finalized_sessions.popitem(last=False)
 
     # ═══════════════ 初始化 ═══════════════
 
@@ -375,7 +385,7 @@ class ChatApp:
                         self.session_id = sid
                     if self.session_id and self.session_id not in self._finalized_sessions \
                             and needs_rollup(snapshot):
-                        self._finalized_sessions.add(self.session_id)
+                        self._mark_finalized(self.session_id)
                         threading.Thread(
                             target=finalize_session,
                             args=(self.session_id, snapshot),

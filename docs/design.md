@@ -1,6 +1,6 @@
 # LANK ReAct Agent 框架 — 设计文档
 
-> 状态：**定稿**（2025 讨论确认，待实现）
+> 状态：**已实现**（2025 讨论定稿；M0–M6 及 M7 主要项已落地，实现与草案差异见第 14 节）
 > 关联：`todo.md` 中「框架结构 ReAct」条目
 > 原则：先讨论方案，再写代码。本文档是唯一的设计依据，实现前如需改动，先改本文档。
 
@@ -562,3 +562,45 @@ score = relevance × w_relevance + freshness × w_freshness + importance × w_im
 | 2025 | 画像写入 | LLM 自动抽取（去重/冲突合并）+ `memory_remember` 显式记忆并存 |
 | 2025 | 额外优化 | 代码级 Bug + 健壮性 + 体验 + 工程化全部入档（第 11 节） |
 | 2025 | M0 范围 | 扩为：上下文管理 + 命令安全 + 代码级 Bug + 健壮性 |
+| 2026 | M7 落地 | 向量检索改为可选本地后端（fastembed，默认关闭、未装降级）；程序性记忆落地（procedures.json）；上下文压缩以 smart_truncate + 多层预算护栏实现（见第 14 节） |
+
+---
+
+## 14. 实现对齐说明（M5–M7 落地后）
+
+> 本节记录实现与早期设计草案的差异与补充，以代码为准；§8.10/§9/§10 中的草案值已被实际实现覆盖。
+
+### 14.1 四层记忆全部落地
+
+| 层 | 实现 | 说明 |
+|---|---|---|
+| 工作记忆 | `agent/`（Plan/Step/结果摘要） | 任务结束归档为情景记忆 |
+| 情景记忆 | `memory/summarizer.py` + `summaries.json` | 会话结束总结 + 长会话 token 阈值增量滚动 |
+| 语义记忆 | `memory/extractor.py` + `store.py`（facts） | 自动抽取 + 显式 `memory_remember`；Jaccard 近似去重合并（`memory_dedup_similarity`）；容量淘汰（forget.prune_facts） |
+| 程序性记忆 | `store.py`（`procedures.json`） | 任务成功后自动沉淀可复用流程，规划阶段按相关性注入（`memory_procedural_enabled` / `memory_procedure_top_k`） |
+
+检索：`retriever.py` 关键词加权（相关性×新鲜度×重要性）为默认路径；§8 预留的“向量接口后期替换”已以**叠加增强**形式落地：`memory/vector.py` 用 fastembed 本地 ONNX 推理（零网络 API），默认关闭（`memory_vector_enabled=False`），未安装/初始化失败静默降级关键词路径，不改变既有行为。DeepSeek 无 embedding API，故走本地后端而非云端。
+
+### 14.2 上下文管理（§9 第 5 条“M7 压缩 tool”的实现形态）
+
+未做成独立工具，而是内建多层护栏：
+- `utils.smart_truncate`：工具/命令输出首尾保留式截断（尾部往往是结论，优于纯头部截断）；
+- `memory_max_inject_chars`（2500）/ `memory_profile_top_k`（12）/ `memory_procedure_top_k`（3）：记忆注入预算封顶，防长期记忆变成 token 炸弹；
+- `max_step_context_chars`（120000）：单步工具循环累计字符护栏；
+- token 用量：流式请求带 `stream_options={"include_usage": true}` 采集 usage，增量落盘 `stats.json`，/stats 可观测。
+
+### 14.3 配置草案与实际值差异（覆盖 §10）
+
+`max_plan_steps` 10→**8**、`max_review_rounds` 3→**2**、`tool_output_limit` 8192→**4096**、`cmd_output_limit` 20480→**6144**（均为 token 经济性收紧）；另新增 `test_mode`、`max_tool_rounds`、检索权重、记忆预算/去重/程序性/向量系列键——完整清单以 `config.py DEFAULT_CONFIG` 与 README 配置表为准。
+
+### 14.4 稳健性护栏（逐轮排查落地，均有离线单测锁死）
+
+- 流式 usage：不传 `include_usage` 则流式 chunk 全不带 usage，纯对话路径 token 恒为 0；兼容供应商不认此参数时 BadRequest 降级重试（不占退避额度）；
+- 终端日志开关：`FileHandler`/`RotatingFileHandler` 均为 `StreamHandler` 子类，isinstance 匹配会误伤日志文件——只精准调整显式登记的 stderr handler；
+- 提示词渲染：可被 config 覆盖的 exec/review 模板禁用 `str.format()`（字面 `{ }` 即抛异常炸任务），改 `_render()` 只替换已知占位符；
+- 线程交接：后台总结线程收历史**快照**而非 live 引用，防与下一轮 append 数据竞争；防重登记集合用有界 LRU；
+- 测试：`tests/test_smoke.py` 49 项全部离线可验证（零 API 依赖），覆盖上述回归点。
+
+### 14.5 存储布局实际差异（覆盖 §8.10）
+
+`index.json` 关键词索引未实现（检索直接扫 facts/summaries/procedures，量级小无需索引）；新增 `procedures.json`（程序性记忆）；向量缓存仅进程内 LRU（`vector._embed_cache`，有界 512），不落盘。
