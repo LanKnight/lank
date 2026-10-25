@@ -123,6 +123,19 @@ def _get_configured(key: str, default: str) -> str:
         return default
 
 
+def _render(template: str, **fields) -> str:
+    """安全渲染：只把 {已知占位符} 替换为对应值，对其余花括号原样保留。
+
+    不用 str.format()——用户自定义提示词（exec_prompt/review_prompt）里
+    常含字面 { }（代码/JSON 示例），format() 会抛 KeyError/ValueError 使执行崩溃。
+    本函数对任意字面花括号免疫。
+    """
+    out = template
+    for key, value in fields.items():
+        out = out.replace("{" + key + "}", str(value))
+    return out
+
+
 def get_plan_prompt(max_steps: int = 10) -> str:
     """获取 PLAN 提示词（支持 plan_prompt 配置覆盖）"""
     return _get_configured("plan_prompt", PLAN_PROMPT).replace("{max_steps}", str(max_steps))
@@ -143,7 +156,8 @@ def get_exec_prompt(
     if prev_summary:
         prev_summary_block = f"前一步结果摘要: {prev_summary}\n"
     template = _get_configured("exec_prompt", EXEC_PROMPT)
-    return template.format(
+    return _render(
+        template,
         goal=goal,
         step_index=step_index,
         step_total=step_total,
@@ -162,7 +176,8 @@ def get_review_prompt(
 ) -> str:
     """获取 REVIEW 提示词（支持 review_prompt 配置覆盖）"""
     template = _get_configured("review_prompt", REVIEW_PROMPT)
-    return template.format(
+    return _render(
+        template,
         goal=goal,
         review_criteria=review_criteria or "（未定义，请按任务目标判断）",
         steps_with_results=steps_with_results,

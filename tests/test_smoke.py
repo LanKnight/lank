@@ -289,6 +289,29 @@ class TestLogging(unittest.TestCase):
         self.assertEqual(logs._console_handler.level, logging.WARNING)
 
 
+class TestPrompts(unittest.TestCase):
+    """提示词渲染对字面花括号免疫（旧 .format 会崩）"""
+
+    def test_render_keeps_literal_braces(self):
+        from lank.agent.prompts import _render
+        out = _render('goal={goal} json={"a": 1} {unknown}', goal="G")
+        self.assertIn("goal=G", out)
+        self.assertIn('json={"a": 1}', out)     # 字面花括号原样保留
+        self.assertIn("{unknown}", out)          # 未知占位符不动
+
+    def test_exec_prompt_custom_with_braces_no_crash(self):
+        from unittest import mock
+        import lank.config as cfg
+        custom = '目标:{goal} 示例:{"k":"v"} 完成后调 step_done'
+        with mock.patch.object(cfg, "get_config",
+                               lambda k, d="": custom if k == "exec_prompt" else d):
+            from lank.agent.prompts import get_exec_prompt
+            out = get_exec_prompt(goal="G", step_index=1, step_total=2, step_id=3,
+                                  step_title="t", step_action="a", step_acceptance="acc")
+            self.assertIn("目标:G", out)
+            self.assertIn('{"k":"v"}', out)      # 旧 .format 在此会抛 KeyError
+
+
 class TestAgentTypes(unittest.TestCase):
     def test_plan_roundtrip(self):
         from lank.agent import Plan, Step

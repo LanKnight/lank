@@ -350,7 +350,9 @@ def run_doctor():
     # 检查 API Key 来源
     env_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if config.get("api_key"):
-        masked = config["api_key"][:6] + "****" + config["api_key"][-4:]
+        _k = config["api_key"]
+        # 短 Key 不拼前后缀（会外泄几乎全文）；长 Key 只露首4末2
+        masked = f"{_k[:4]}****{_k[-2:]}" if len(_k) > 10 else "已设置（已隐去）"
         if env_key:
             console.print(f"  ✅ API Key 已配置: {masked} [dim](来自环境变量 OPENAI_API_KEY)[/dim]")
         else:
