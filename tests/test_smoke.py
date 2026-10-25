@@ -153,6 +153,72 @@ class TestUsage(unittest.TestCase):
         self.assertEqual(self.rec.call_count, 1)   # total<=0 不落盘
 
 
+class TestStreamUsage(unittest.TestCase):
+    """流式请求必须带 include_usage，否则流式路径 token 统计恒为 0（/stats 失真）"""
+
+    def _mk_client(self):
+        from lank.ai_client import AIClient
+        return AIClient()
+
+    def _fake(self, create):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+    def test_stream_includes_usage_option(self):
+        c = self._mk_client()
+        rec = []
+        c.client = self._fake(lambda **kw: (rec.append(kw), object())[1])
+        c._create_completion([{"role": "user", "content": "x"}], stream=True)
+        self.assertEqual(rec[0].get("stream_options"), {"include_usage": True})
+
+    def test_non_stream_has_no_stream_options(self):
+        c = self._mk_client()
+        rec = []
+        c.client = self._fake(lambda **kw: (rec.append(kw), object())[1])
+        c._create_completion([{"role": "user", "content": "x"}], stream=False)
+        self.assertNotIn("stream_options", rec[0])
+
+    def test_bad_request_falls_back_without_stream_options(self):
+        import lank.ai_client as ac
+        if not ac.HAS_OPENAI:
+            self.skipTest("openai 未安装")
+        import httpx
+        resp = httpx.Response(400, request=httpx.Request("POST", "http://localhost"))
+        err = ac.BadRequestError("unsupported stream_options", response=resp, body=None)
+        c = self._mk_client()
+        rec = []
+
+        def create(**kw):
+            rec.append(kw)
+            if "stream_options" in kw:
+                raise err
+            return object()
+        c.client = self._fake(create)
+        c._create_completion([{"role": "user", "content": "x"}], stream=True)
+        self.assertEqual(len(rec), 2)                 # 带参失败 → 降级重试一次
+        self.assertIn("stream_options", rec[0])
+        self.assertNotIn("stream_options", rec[1])
+
+    def test_accumulate_stream_reads_usage_from_final_chunk(self):
+        """从 choices 为空但带 usage 的末 chunk 取到用量"""
+        from types import SimpleNamespace
+        from lank.ai_client import _accumulate_stream
+
+        class U:
+            prompt_tokens = 3
+            completion_tokens = 4
+            total_tokens = 7
+
+        d1 = SimpleNamespace(delta=SimpleNamespace(content="hi", tool_calls=None))
+        ch1 = SimpleNamespace(choices=[d1], usage=None)
+        ch2 = SimpleNamespace(choices=[], usage=U())
+        content, tcs, usage = _accumulate_stream([ch1, ch2])
+        self.assertEqual(content, "hi")
+        self.assertEqual(tcs, [])
+        self.assertEqual(usage.get("total_tokens"), 7)
+
+
 class TestVector(unittest.TestCase):
     """可选向量后端：纯函数 + 默认降级（不依赖模型）"""
 

@@ -363,17 +363,34 @@ class AIClient:
         tools = get_all_tools()
         retries = retry if retry is not None else int(get_config("api_max_retries", 2))
         delay = 1.0
+        # 流式默认请求 usage（末 chunk 携带）：否则流式路径 token 统计恒为 0，
+        # /stats 与实际成本不可观测。部分兼容供应商不认此参数，命中后自动降级。
+        use_stream_opts = stream
+
+        def _issue(with_opts: bool):
+            kwargs: Dict[str, Any] = dict(
+                model=self.model,
+                messages=messages,
+                tools=tools if tools else None,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=stream,
+                timeout=timeout,
+            )
+            if stream and with_opts:
+                kwargs["stream_options"] = {"include_usage": True}
+            return self.client.chat.completions.create(**kwargs)
+
         for attempt in range(retries + 1):
             try:
-                return self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=tools if tools else None,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                    stream=stream,
-                    timeout=timeout,
-                )
+                try:
+                    return _issue(use_stream_opts)
+                except BadRequestError:
+                    # 兼容供应商不支持 stream_options：去掉后原样重试一次（不消耗退避额度）
+                    if stream and use_stream_opts:
+                        use_stream_opts = False
+                        return _issue(False)
+                    raise
             except AuthenticationError:
                 # 认证失败不应重试（401 重试只会浪费等待时间）
                 raise
