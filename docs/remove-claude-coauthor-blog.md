@@ -10,11 +10,11 @@
 
 | 编号 | 它到底是什么 | 在哪能看到 | 删除手段 | 生效延迟 |
 | --- | --- | --- | --- | --- |
-| 🟩 ① | **当前历史**：提交信息里真有 `Co-Authored-By: Claude <noreply@anthropic.com>` 尾注 | `git log`、commit 页、`.patch` | 重写历史（filter-repo / filter-branch） | 即时 |
-| 🟨 ② | **本地旧对象**：分支 / tag / `refs/original/` / reflog / stash 仍指向老提交 | `git for-each-ref`、`git fsck --unreachable` | 删引用 + `reflog expire` + `gc --prune=now` | 即时（仅本地） |
-| 🟥 ③-A | **commit 图索引**：Insights 折线图、`/repos/{o}/{r}/contributors`、`/stats/contributors`、`/graphs/contributors-data` | 图表页、API | 等 GitHub 重算 | 十几分钟到数小时 |
-| 🟥 ③-B | **仓库首页右栏 Contributors**：走 `/_sidebar` 端点，是一份独立的仓库级贡献者统计 | 仓库首页右侧边栏 | **切默认分支来回**，逼重算 | 约 30 秒 |
-| ⬜ ③-C | **服务端旧对象直链**：老 commit 的 URL 短期仍可打开 | `/commit/<老SHA>` | 等它自然过期，或提 Support | 数天 |
+| ① | **当前历史**：提交信息里真有 `Co-Authored-By: Claude <noreply@anthropic.com>` 尾注 | `git log`、commit 页、`.patch` | 重写历史（filter-repo / filter-branch） | 即时 |
+| ② | **本地旧对象**：分支 / tag / `refs/original/` / reflog / stash 仍指向老提交 | `git for-each-ref`、`git fsck --unreachable` | 删引用 + `reflog expire` + `gc --prune=now` | 即时（仅本地） |
+| ③-A | **commit 图索引**：Insights 折线图、`/repos/{o}/{r}/contributors`、`/stats/contributors`、`/graphs/contributors-data` | 图表页、API | 等 GitHub 重算 | 十几分钟到数小时 |
+| ③-B | **仓库首页右栏 Contributors**：走 `/_sidebar` 端点，是一份独立的仓库级贡献者统计 | 仓库首页右侧边栏 | **切默认分支来回**，逼重算 | 约 30 秒 |
+| ③-C | **服务端旧对象直链**：老 commit 的 URL 短期仍可打开 | `/commit/<老SHA>` | 等它自然过期，或提 Support | 数天 |
 
 两条必须先记住的判断：
 
@@ -48,8 +48,8 @@ git log --all -i --grep="Co-Authored-By: Claude" --format="%h %s"
 git log -i --grep="Co-Authored-By" --format="%h %s" main
 ```
 
-- `--all` 命中、`main` 不命中 → 问题在 🟨，别的引用挂着老历史。
-- `main` 也命中 → 问题在 🟩，要重写。
+- `--all` 命中、`main` 不命中 → 问题在 ②，别的引用挂着老历史。
+- `main` 也命中 → 问题在 ①，要重写。
 
 看完整信息，确认尾注真实格式（正则要按实际写，别照抄别人的）：
 
@@ -63,11 +63,11 @@ git --no-pager log --all -i --grep="claude" --format="===%h===%n%B" -n 10
 git --no-pager log --all -i --grep="claude" --format="%h %an <%ae> | %cn <%ce>"
 ```
 
-> ⚠️ `git log` 无匹配时**退出码也是 0**，别用退出码判断"有没有署名"，只看有没有输出。
+> 注意：`git log` 无匹配时**退出码也是 0**，别用退出码判断"有没有署名"，只看有没有输出。
 >
-> ⚠️ PowerShell 里 git 的进度和警告走 stderr，会标红一片，看着像报错其实正常。判断成败看 `$LASTEXITCODE` 与实际输出行。
+> 注意：PowerShell 里 git 的进度和警告走 stderr，会标红一片，看着像报错其实正常。判断成败看 `$LASTEXITCODE` 与实际输出行。
 
-> 🕳️ **中文提交信息显示成 `鏂囨。` 这种乱码，不等于仓库坏了。** 用 `>` 或 `Out-File` 重定向 `git log` 输出时，PowerShell 会做一次编码转换。想确认原始字节，让 Python 直接读：
+> 坑：**中文提交信息显示成 `鏂囨。` 这种乱码，不等于仓库坏了。** 用 `>` 或 `Out-File` 重定向 `git log` 输出时，PowerShell 会做一次编码转换。想确认原始字节，让 Python 直接读：
 
 ```powershell
 python -c "import subprocess;d=subprocess.run(['git','log','-1','--format=%B'],capture_output=True);open('_verify.txt','wb').write(d.stdout)"
@@ -88,7 +88,7 @@ git for-each-ref --format="%(objecttype) %(refname) %(objectname:short)"
 git fsck --unreachable --no-progress | Measure-Object -Line
 ```
 
-> 🕳️ 最容易漏的一条：`for-each-ref` 看本地、`ls-remote` 看远端，两边都要查。本地很可能藏着 `backup-before-rewrite` 这类备份 tag，指着几十个带署名的老提交。只要它还"可达"，一次手滑的 `push --mirror` 就能让署名原地复活。
+> 坑：最容易漏的一条：`for-each-ref` 看本地、`ls-remote` 看远端，两边都要查。本地很可能藏着 `backup-before-rewrite` 这类备份 tag，指着几十个带署名的老提交。只要它还"可达"，一次手滑的 `push --mirror` 就能让署名原地复活。
 
 顺手确认工作区干净：
 
@@ -200,7 +200,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 于是就有"图表已干净、侧栏还是 2 人"的窗口期。这段窗口期可以靠切默认分支手动触发重算，不必干等 24 小时。
 
-> 🔑 一句话：**重写历史只能回收"提交里的邮箱"，回收不了"服务端已经缓存好的贡献者名单"。** 后者得单独处理。
+> 一句话：**重写历史只能回收"提交里的邮箱"，回收不了"服务端已经缓存好的贡献者名单"。** 后者得单独处理。
 
 ---
 
@@ -344,7 +344,7 @@ git gc --prune=now
 git fsck --unreachable --no-progress | Measure-Object -Line   # 复查应为 0
 ```
 
-> 🗑️ 删完一定要 `git cat-file -t <老SHA>` 验证——返回 `fatal: Not a valid object name` 才算真没了。此后无论普通 push 还是 `--mirror` 都推不回去。这一步过了，层②才算真正关闭。
+> 删完一定要 `git cat-file -t <老SHA>` 验证——返回 `fatal: Not a valid object name` 才算真没了。此后无论普通 push 还是 `--mirror` 都推不回去。这一步过了，层②才算真正关闭。
 
 ### 4.2 层③-A：等服务端索引重算
 
@@ -354,7 +354,7 @@ git fsck --unreachable --no-progress | Measure-Object -Line   # 复查应为 0
 
 ### 4.3 层③-B：切默认分支逼重算（保姆级六步）
 
-> ⚠️ 新版 GitHub 的设置路径已经变了，这是最容易卡住的一步。
+> 注意：新版 GitHub 的设置路径已经变了，这是最容易卡住的一步。
 
 #### 第 1 步：准备临时分支（必须与主分支同一个 commit）
 
@@ -373,7 +373,7 @@ git push origin temp-cache-refresh
 
 #### 第 2 步：找对设置页（新手最容易卡在这里）
 
-> ⚠️ **GitHub 新版已把 Default branch 从 `Settings → Branches` 迁到 `Settings → General`。**
+> 注意：**GitHub 新版已把 Default branch 从 `Settings → Branches` 迁到 `Settings → General`。**
 
 先看 `Settings → Branches`：现在只剩 Branch protection rules 和 rulesets，**没有 Default branch**。在这一页找，会以为功能被下线了：
 
@@ -421,37 +421,37 @@ git branch -D temp-cache-refresh
 git remote prune origin
 ```
 
-> 🕳️ 删除可能报 `Recv failure: Connection was reset`，是网络抖动，先重试一次；仍失败就走代理。删完务必 `git remote prune origin`，否则本地会留一个 `refs/remotes/origin/temp-cache-refresh` 幽灵分支，以后每次 `for-each-ref` 都能看到它。
+> 坑：删除可能报 `Recv failure: Connection was reset`，是网络抖动，先重试一次；仍失败就走代理。删完务必 `git remote prune origin`，否则本地会留一个 `refs/remotes/origin/temp-cache-refresh` 幽灵分支，以后每次 `for-each-ref` 都能看到它。
 
 ### 4.4 兜底方案（前面都不奏效再考虑）
 
 | 方案 | 代价 | 说明 |
 | --- | --- | --- |
-| 🔁 orphan 空历史强推覆盖 main | ⚠️ 高：默认分支短暂"几乎空" | 社区"休克疗法"，比切分支暴力 |
-| 🎫 提 GitHub Support 工单 | 🕐 慢：等回复，需登录 | 说明"已 force push 清理历史，请求清除贡献者缓存"，附操作时间 |
-| 🗑️ 删库重建 | 💸 最高：丢 star / issue / 旧 URL | 100% 干净，但非必要不建议 |
+| orphan 空历史强推覆盖 main | 高：默认分支短暂"几乎空" | 社区"休克疗法"，比切分支暴力 |
+| 提 GitHub Support 工单 | 慢：等回复，需登录 | 说明"已 force push 清理历史，请求清除贡献者缓存"，附操作时间 |
+| 删库重建 | 最高：丢 star / issue / 旧 URL | 100% 干净，但非必要不建议 |
 
 ---
 
 ## 五、踩坑清单
 
-1. 🚫 「删了还在」几乎都是缓存层，不是历史层。**但缓存层有两份，别只认一份。** 先分清 ①②③-A ③-B，再动手。
-2. 🕳️ 本地备份 tag / 分支是复活的种子。`for-each-ref` + `ls-remote` 双查，任何指向老历史的引用都要删干净，再 `reflog expire` + `gc --prune=now`。
-3. 🧾 filter-branch 会留 `refs/original/`。不清掉等于白重写。
-4. 📛 老 SHA 直链会残留一阵。`/commit/<老SHA>` 短期还能打开、还带尾注，那是服务端旧对象缓存，不影响侧栏和统计，会自行过期。
-5. 🏷️ 「标题里出现 Claude」≠「署名」。搜到"清理 Claude Code 残留"这类提交标题很正常，它不是 co-author 尾注，不会被算成贡献者。
-6. 🔌 国内网络 push 被重置就走代理。
-7. 🖥️ PowerShell 里 git 的 stderr 会标红，看着像报错其实正常。
-8. 🔐 默认分支切换需要登录态。自动化别替你填凭据，先人工登录。
-9. ✉️ 根因在邮箱映射。历史上出现过 `noreply@anthropic.com` 这类被 GitHub 关联到真实账号的邮箱，头像就会挂上——从源头规范 `git config user.email` 才能治本。
-10. 🧩 **`contributors-data` 干净 ≠ 侧栏干净。** 两者是不同数据源，侧栏走 `/_sidebar`。
-11. 🧩 **`/contributors_list` 已废弃。** 它恒返回空 `<ul>`，拿它当证据会得出"已经干净了"的错误结论。
-12. 🧩 **未登录看不到侧栏名单。** 未登录只有骨架屏，脚本抓 HTML 永远"干净"，判断必须用登录态浏览器。
-13. 🧩 **`filter-branch --all` 会污染远端追踪引用。** 重写后 `--force-with-lease` 失效，`origin/HEAD` 也会从符号引用退化成普通引用。
-14. 🧩 **`filter-repo` 默认拒绝非全新克隆，且会动 `origin`。** 记得 `--force`，记得补 remote。
-15. 🧩 **控制台中文乱码 ≠ 仓库损坏。** PowerShell 重定向会转码，用 Python 读字节另存 UTF-8 再判断。
-16. 🧩 **`git log --grep` 没命中退出码也是 0。** 只看有没有输出，别看退出码。
-17. 🧩 **匿名 API 会 `403 rate limit exceeded`。** 那是限流，不是"没删干净"，换不需要 token 的图表接口即可。
+1. 「删了还在」几乎都是缓存层，不是历史层。**但缓存层有两份，别只认一份。** 先分清 ①②③-A ③-B，再动手。
+2. 本地备份 tag / 分支是复活的种子。`for-each-ref` + `ls-remote` 双查，任何指向老历史的引用都要删干净，再 `reflog expire` + `gc --prune=now`。
+3. filter-branch 会留 `refs/original/`。不清掉等于白重写。
+4. 老 SHA 直链会残留一阵。`/commit/<老SHA>` 短期还能打开、还带尾注，那是服务端旧对象缓存，不影响侧栏和统计，会自行过期。
+5. 「标题里出现 Claude」≠「署名」。搜到"清理 Claude Code 残留"这类提交标题很正常，它不是 co-author 尾注，不会被算成贡献者。
+6. 国内网络 push 被重置就走代理。
+7. PowerShell 里 git 的 stderr 会标红，看着像报错其实正常。
+8. 默认分支切换需要登录态。自动化别替你填凭据，先人工登录。
+9. 根因在邮箱映射。历史上出现过 `noreply@anthropic.com` 这类被 GitHub 关联到真实账号的邮箱，头像就会挂上——从源头规范 `git config user.email` 才能治本。
+10. **`contributors-data` 干净 ≠ 侧栏干净。** 两者是不同数据源，侧栏走 `/_sidebar`。
+11. **`/contributors_list` 已废弃。** 它恒返回空 `<ul>`，拿它当证据会得出"已经干净了"的错误结论。
+12. **未登录看不到侧栏名单。** 未登录只有骨架屏，脚本抓 HTML 永远"干净"，判断必须用登录态浏览器。
+13. **`filter-branch --all` 会污染远端追踪引用。** 重写后 `--force-with-lease` 失效，`origin/HEAD` 也会从符号引用退化成普通引用。
+14. **`filter-repo` 默认拒绝非全新克隆，且会动 `origin`。** 记得 `--force`，记得补 remote。
+15. **控制台中文乱码 ≠ 仓库损坏。** PowerShell 重定向会转码，用 Python 读字节另存 UTF-8 再判断。
+16. **`git log --grep` 没命中退出码也是 0。** 只看有没有输出，别看退出码。
+17. **匿名 API 会 `403 rate limit exceeded`。** 那是限流，不是"没删干净"，换不需要 token 的图表接口即可。
 
 ---
 
@@ -641,4 +641,4 @@ git status --porcelain
 
 ---
 
-> 🧭 一句话收尾：**先分层定位，再用能证明问题在哪一层的证据下结论，最后才动手。** 对着已经干净的历史反复 force push，和对着服务端缓存反复硬刷新，是这件事上最容易浪费时间的两种做法。而比这两者更浪费时间的，是拿一份干净的数据去证明另一份数据也干净。
+> 一句话收尾：**先分层定位，再用能证明问题在哪一层的证据下结论，最后才动手。** 对着已经干净的历史反复 force push，和对着服务端缓存反复硬刷新，是这件事上最容易浪费时间的两种做法。而比这两者更浪费时间的，是拿一份干净的数据去证明另一份数据也干净。
