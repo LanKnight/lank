@@ -1,20 +1,12 @@
-# 如何把 GitHub 仓库里的「Claude 署名」彻底删掉（完整版·含实操截图）
+# 如何把 GitHub 仓库里的「Claude 署名」彻底删掉
 
-—— 从 lankhub 首战的"以为干净了"，到 lank 再战才发现还剩一层
+仓库贡献者名单里出现 AI 账号，通常不是删掉一条 `Co-Authored-By` 尾注就能解决的。这行署名会残留在五个互不相干的位置，每一处的清除方式和生效延迟都不同。只处理其中一处，就会遇到"`git log` 已经干净、仓库首页还挂着它"的情况。
 
-一年前我写过一篇《如何把 GitHub 仓库里的「Claude 署名」彻底删掉 —— 一次实战全记录》。当时在 `LanKnight/lankhub` 上把 `Co-Authored-By: Claude` 尾注清干净，切了默认分支，首页侧栏从 2 人变成 1 人，收工。
-
-后来在 `LanKnight/lank` 上重做同一件事，严格按那篇文章的步骤走了一遍：`git log` 全绿、`contributors-data` 只剩自己、commit 搜索 0 命中——**仓库首页右栏的 Contributors 依然挂着 claude，计数还是 2**。
-
-于是回去把"层③"拆开重看。结论有点意外：三层模型没错，但层③里面藏着**两个不相干的数据源**，原文只认了其中一个，把另一个归成了"缓存滞后、等 24 小时"。照着做的人就会卡在我卡过的地方。
-
-这篇是完整版：保留原文全部结论，修正三处会让人白忙的判断，补上第二份服务端缓存的定位与刷新方法，配上这次实操的八张截图，最后加一节"怎么让 AI Agent 替你干这件事"。
+下面按「先定位、再动手、最后验收」的顺序给出完整步骤。
 
 ---
 
-## 一、先认清：署名不是三层，是「三层五处」
-
-原文的三层划分方向是对的，问题出在第三层不够细。完整模型如下：
+## 一、先认清：署名藏在这五个地方
 
 | 编号 | 它到底是什么 | 在哪能看到 | 删除手段 | 生效延迟 |
 | --- | --- | --- | --- | --- |
@@ -26,22 +18,8 @@
 
 两条必须先记住的判断：
 
-- **③-A 干净 ≠ ③-B 干净。** 原文把 `/graphs/contributors-data?all=1` 当成"唯一权威"，实测会翻车：该接口只剩你自己时，首页右栏照样显示 2 人。
+- **③-A 干净 ≠ ③-B 干净。** 把 `/graphs/contributors-data?all=1` 当成"唯一权威"会翻车：该接口只剩你自己时，首页右栏照样可能显示 2 人。它们是两份独立缓存。
 - **③-C 不影响名单。** 老 commit 直链残留是正常的对象缓存，不参与贡献者统计。别为它再重写一次历史。
-
-### 为什么首战会以为"已经干净了"
-
-把两次实战摆在一起，问题一目了然：
-
-| 环节 | lankhub（首战） | lank（再战） |
-| --- | --- | --- |
-| 层① 重写 | filter-repo | filter-branch（国内装不上 filter-repo） |
-| 层② 清理 | 删备份 tag + gc | 删 `refs/original` + gc |
-| 层③ 判断依据 | `contributors-data?all=1` 只有自己 | 同左，也确认只有自己 |
-| 层③ 处理 | 直接切默认分支，侧栏变 1 人 | **先误判成浏览器缓存**，硬刷新折腾几轮无果 |
-| 结果 | 收工 | 继续深挖才发现侧栏读的是 `_sidebar` |
-
-差别在于：lankhub 那次运气好，切分支顺手把两份缓存都刷新了，于是"切分支有效"被记成了结论；lank 这次先查 API 看到干净，就急着下"是你浏览器缓存"的判断，反而绕了远路。**顺序错了，结论就错。**
 
 ### 按症状直达
 
@@ -59,8 +37,6 @@
 ---
 
 ## 二、排查：怎么判断卡在哪一层
-
-原文的排查顺序可用，这里补上第三层的细分判据和实拍图。
 
 ### 2.1 看当前历史里到底还有没有署名
 
@@ -91,13 +67,13 @@ git --no-pager log --all -i --grep="claude" --format="%h %an <%ae> | %cn <%ce>"
 >
 > ⚠️ PowerShell 里 git 的进度和警告走 stderr，会标红一片，看着像报错其实正常。判断成败看 `$LASTEXITCODE` 与实际输出行。
 
-> 🕳️ **新增坑：中文提交信息显示成 `鏂囨。` 这种乱码，不等于仓库坏了。** 用 `>` 或 `Out-File` 重定向 `git log` 输出时，PowerShell 会做一次编码转换。想确认原始字节，让 Python 直接读：
+> 🕳️ **中文提交信息显示成 `鏂囨。` 这种乱码，不等于仓库坏了。** 用 `>` 或 `Out-File` 重定向 `git log` 输出时，PowerShell 会做一次编码转换。想确认原始字节，让 Python 直接读：
 
 ```powershell
 python -c "import subprocess;d=subprocess.run(['git','log','-1','--format=%B'],capture_output=True);open('_verify.txt','wb').write(d.stdout)"
 ```
 
-用 UTF-8 编辑器打开 `_verify.txt` 再看。我这次差点因为控制台乱码以为提交信息被改坏，白查了半天。
+用 UTF-8 编辑器打开 `_verify.txt` 再看。别因为控制台乱码以为提交信息被改坏，白查半天。
 
 ### 2.2 看远端和本地分别还有哪些引用
 
@@ -112,7 +88,7 @@ git for-each-ref --format="%(objecttype) %(refname) %(objectname:short)"
 git fsck --unreachable --no-progress | Measure-Object -Line
 ```
 
-> 🕳️ 原文记的大坑依旧值得重复：`for-each-ref` 看本地、`ls-remote` 看远端，两边都要查。首战时本地就藏着一枚 `backup-before-rewrite` 的 tag，指着 27 个带署名的老提交。只要它还"可达"，一次手滑的 `push --mirror` 就能让署名原地复活。
+> 🕳️ 最容易漏的一条：`for-each-ref` 看本地、`ls-remote` 看远端，两边都要查。本地很可能藏着 `backup-before-rewrite` 这类备份 tag，指着几十个带署名的老提交。只要它还"可达"，一次手滑的 `push --mirror` 就能让署名原地复活。
 
 顺手确认工作区干净：
 
@@ -122,7 +98,7 @@ git status --porcelain
 
 ### 2.3 看服务端：这一节是全文重点
 
-原文这里只有一句"用两处交叉验证"——`contributors-data?all=1` 加首页右栏。实测这句会把人带偏，因为**这两处根本不是同一个数据源**。
+网上通行说法是"用两处交叉验证"——`contributors-data?all=1` 加首页右栏。这句会把人带偏，因为**这两处根本不是同一个数据源**。
 
 #### 2.3.1 先查 ③-A：图表与 API
 
@@ -147,19 +123,19 @@ python -c "import json,urllib.request;u='https://api.github.com/repos/<owner>/<r
 - `contributors-data` 返回 **202** → GitHub 正在后台重算，等；返回 **200** 且只剩你自己 → 重算完成。
 - 命中 `403 rate limit exceeded` → 匿名 API 限流，**不是**"没删干净"。换不需要 token 的 3 号探针，或等几分钟。
 
-下图是这次 lank 仓库的 Insights → Contributors 页，重写推送后它已经只剩一个人：
+下图是 Insights → Contributors 页，重写推送后它已经只剩一个人：
 
-![图 1：Insights → Contributors 图表，重写后只统计到 LanKnight](images/fig-02-insights-graph.png)
+![图 1：Insights → Contributors 图表，重写后只统计到一个账号](images/fig-02-insights-graph.png)
 
 *图 1：图表页只认 commit 作者，所以它比侧栏更早变干净。看到这张图就以为"全部搞定"，是最容易踩的坑。*
 
 #### 2.3.2 再查 ③-B：首页右栏，必须用登录态浏览器
 
-同一时刻，仓库首页右栏长这样：
+同一时刻，仓库首页右栏可能还是这样：
 
-![图 2：修复前，仓库首页右栏 Contributors 显示 2 人（LanKnight 与 claude）](images/fig-01-sidebar-before.png)
+![图 2：修复前，仓库首页右栏 Contributors 显示 2 人（自己的账号与 claude）](images/fig-01-sidebar-before.png)
 
-*图 2：图表 1 人、侧栏 2 人——这张图就是"两份缓存不同步"的直接证据。*
+*图 2：图表 1 人、侧栏 2 人——这就是"两份缓存不同步"的直接证据。*
 
 这里有两个反直觉事实：
 
@@ -179,15 +155,15 @@ python -c "import json,urllib.request;u='https://api.github.com/repos/<owner>/<r
 <div class="prc-SkeletonText-..." data-text-skeleton-size="bodyMedium"></div>
 ```
 
-所以"我用脚本抓首页 HTML，里面没有 claude"**不能**证明侧栏干净。必须用登录态浏览器实地看，并且截图留证。
+所以"用脚本抓首页 HTML，里面没有 claude"**不能**证明侧栏干净。必须用登录态浏览器实地看，并且截图留证。
 
 #### 2.3.3 三条判据：证明问题在服务端，而不是你的浏览器缓存
 
-用"硬刷新没用"就断言"肯定是缓存"是错的，得拿证据。这次我是这么定性的：
+用"硬刷新没用"就断言"肯定是缓存"是错的，得拿证据。用下面三条判据定性：
 
 **判据一：看端点响应头。** `/_sidebar` 返回：
 
-```
+```text
 Cache-Control: no-cache
 ```
 
@@ -201,7 +177,7 @@ Cache-Control: no-cache
 | Insights → Contributors 图表 | 1 人 | 1 人 |
 | `contributors-data?all=1` | 1 人 | 1 人 |
 
-侧栏 2 人、图表 1 人——这就是 ③-B 未重算的典型特征。原文那句"两者不一致 = 缓存滞后"方向是对的，只是没说清究竟是**哪一份**缓存在滞后。
+侧栏 2 人、图表 1 人——这就是 ③-B 未重算的典型特征。"两者不一致 = 缓存滞后"方向是对的，关键是分清究竟是**哪一份**缓存在滞后。
 
 **判据三：只有登录态能看到名单。** 见上。所以这件事的最终判据永远是"登录态浏览器 + 截图"，不是 curl。
 
@@ -209,11 +185,9 @@ Cache-Control: no-cache
 
 ## 三、为什么 @claude 会被算成贡献者
 
-原文的机制解释依然成立，这里补上"为什么两份数据源会不同步"。
-
 关键机制：GitHub 判定一次提交归属，看的是提交里的 Author / Co-author 邮箱，再拿邮箱去全网匹配已注册账号。
 
-```
+```text
 Co-Authored-By: Claude <noreply@anthropic.com>
 └── 这个邮箱恰好关联到真实账号 @claude（ID 81847）
 ⇒ 头像就永久挂上了仓库首页
@@ -224,7 +198,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - commit 图索引（③-A）按"默认分支可达提交"重算，重写推送后十几分钟到数小时就跟上；
 - 仓库侧栏 Contributors（③-B）是另一份仓库级缓存，只在特定事件（默认分支变更、仓库元数据变更）时失效。
 
-于是就有"图表已干净、侧栏还是 2 人"的窗口期。原文把这段窗口期整体归为"等 24 小时"，实际它可以用切默认分支手动触发，不用干等。
+于是就有"图表已干净、侧栏还是 2 人"的窗口期。这段窗口期可以靠切默认分支手动触发重算，不必干等 24 小时。
 
 > 🔑 一句话：**重写历史只能回收"提交里的邮箱"，回收不了"服务端已经缓存好的贡献者名单"。** 后者得单独处理。
 
@@ -239,11 +213,11 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 ```bash
 git filter-repo --force --message-callback "
 import re
-return re.sub(rb'(?im)^Co-Authored-By:\s*Claude[^\n]*\n?', b'', message)
+return re.sub(rb'(?im)^\s*Co-Authored-By:\s*(claude|anthropic)[^\n]*\n?', b'', message)
 "
 ```
 
-原文没提、但实测一定会撞上的两个坑：
+两个实测一定会撞上的坑：
 
 - **必须加 `--force`。** `filter-repo` 默认拒绝在非 fresh clone 上重写历史，报 `expected fresh clone`。
 - **它会动 `origin`。** 不同版本行为不一致（可能直接移除，也可能改名备份）。跑完先看一眼：
@@ -264,9 +238,9 @@ git remote add origin https://github.com/<owner>/<repo>.git
 python -m pip install --proxy http://127.0.0.1:7897 git-filter-repo
 ```
 
-我这次两种装法都报 `SSL: UNEXPECTED_EOF_WHILE_READING`，索性直接走方案 B。
+若两种装法都报 `SSL: UNEXPECTED_EOF_WHILE_READING`，直接用方案 B。
 
-#### 方案 B：git filter-branch（零依赖兜底，本次实际采用）
+#### 方案 B：git filter-branch（零依赖兜底）
 
 先把剥离逻辑写成独立脚本，放**仓库外**，避免污染工作区：
 
@@ -297,13 +271,13 @@ git filter-branch -f --msg-filter "python D:/tools/_strip_coauthor.py" -- HEAD
 
 预期输出一串 `Rewrite <sha> (n/总数)`，最后是 `Ref 'refs/heads/main' was rewritten`。
 
-**为什么坚持不用 `--all`**——这是原文完全没有的坑：
+**为什么不要用 `--all`**：
 
 `--all` 会把 `refs/remotes/origin/main` 一起重写。结果是本地记录的"远端值"变成新 SHA，而真实远端还是旧 SHA，接着 `--force-with-lease` 直接失效（它拿本地记录去比对），表现是莫名其妙的 `stale info`，或者干脆没提示就推上去了。
 
-只用 `HEAD` 或 `main`，不碰任何远端引用，最稳。如果你已经跑了 `--all`，按 4.1.1 修回来。
+只用 `HEAD` 或 `main`，不碰任何远端引用，最稳。如果已经跑了 `--all`，按 4.1.1 修回来。
 
-#### 4.1.1 重写后必须做的引用修复（新增）
+#### 4.1.1 重写后必须做的引用修复
 
 ```bash
 # 1) 看远端追踪引用被改成什么样了
@@ -320,7 +294,7 @@ git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 git symbolic-ref refs/remotes/origin/HEAD   # 确认输出 refs/remotes/origin/main
 ```
 
-#### 4.1.2 重写后立刻做三项校验（新增）
+#### 4.1.2 重写后立刻做三项校验
 
 ```bash
 # 校验一：尾注真的没了（应无输出）
@@ -343,8 +317,8 @@ git push --force-with-lease origin main
 
 成功的样子：
 
-```
- + 43b32f1...5ce9848 main -> main (forced update)
+```text
+ + <旧SHA>...<新SHA> main -> main (forced update)
 ```
 
 报 `stale info` 的两种解法：
@@ -358,7 +332,7 @@ git push --force-with-lease origin main
 git push --force-with-lease=main:<旧SHA> origin main
 ```
 
-推送成功后清本地备份引用（即原来的层②）：
+推送成功后清本地备份引用（即层②）：
 
 ```bash
 git for-each-ref refs/original --format="%(refname)"
@@ -374,13 +348,13 @@ git fsck --unreachable --no-progress | Measure-Object -Line   # 复查应为 0
 
 ### 4.2 层③-A：等服务端索引重算
 
-重写推送后，`contributors-data?all=1` 会先返回 **202**（重算中），过一段时间变成 **200** 且只剩你自己。lank 这次是几小时内跟上的，不需要任何额外操作。
+重写推送后，`contributors-data?all=1` 会先返回 **202**（重算中），过一段时间变成 **200** 且只剩你自己。实测是几小时内跟上，不需要任何额外操作。
 
 如果几小时后仍是 2 人，说明历史没重写干净，回 4.1.2 复查，别急着去刷缓存。
 
-### 4.3 层③-B：切默认分支逼重算（保姆级五步）
+### 4.3 层③-B：切默认分支逼重算（保姆级六步）
 
-原文的招数是对的，但**页面路径已经变了**，这是第二处必须修正的地方。
+> ⚠️ 新版 GitHub 的设置路径已经变了，这是最容易卡住的一步。
 
 #### 第 1 步：准备临时分支（必须与主分支同一个 commit）
 
@@ -389,7 +363,7 @@ git branch temp-cache-refresh main
 git push origin temp-cache-refresh
 ```
 
-原文用 `--allow-empty` 造了个空提交，其实不需要。同一个 commit 更好：切换期间仓库对外显示的内容**零差异**，只是换了个分支名。
+不需要造空提交，同一个 commit 更好：切换期间仓库对外显示的内容**零差异**，只是换了个分支名。
 
 推上去之后，在仓库首页分支下拉里应该能看到它：
 
@@ -401,7 +375,7 @@ git push origin temp-cache-refresh
 
 > ⚠️ **GitHub 新版已把 Default branch 从 `Settings → Branches` 迁到 `Settings → General`。**
 
-先看 `Settings → Branches`：现在只剩 Branch protection rules 和 rulesets，**没有 Default branch**。照老教程在这页找，会以为功能被下线了：
+先看 `Settings → Branches`：现在只剩 Branch protection rules 和 rulesets，**没有 Default branch**。在这一页找，会以为功能被下线了：
 
 ![图 4：Settings → Branches 页面只剩 Branch protection rules，没有 Default branch](images/fig-04-settings-branches.png)
 
@@ -421,7 +395,7 @@ git push origin temp-cache-refresh
 
 ![图 6：切换成功，顶部横幅显示 Default branch changed to temp-cache-refresh](images/fig-06-switched-to-temp.png)
 
-*图 6：看到这条绿底横幅，说明切换已经生效。记一下时间，后面要等 30 秒。*
+*图 6：看到这条绿底横幅，说明切换已经生效。记一下时间，后面要等 30 秒以上。*
 
 #### 第 4 步：等 30~40 秒，切回 main
 
@@ -429,15 +403,15 @@ git push origin temp-cache-refresh
 
 ![图 7：切回成功，横幅显示 Default branch changed to main](images/fig-07-switched-back.png)
 
-*图 7：切回来了。两次切换之间要留出 30 秒以上，太短 GitHub 来不及重算。lank 这次是 35 秒。*
+*图 7：切回来了。两次切换之间要留出 30 秒以上，太短 GitHub 来不及重算。实测 35 秒即可。*
 
 #### 第 5 步：验证
 
 回仓库首页，等侧栏懒加载完成（可能要点一下或等 10 秒），Contributors 应变成 1 人；再按 `Ctrl+Shift+R` 硬刷新确认稳定：
 
-![图 8：修复后，首页右栏 Contributors 只剩 1 人（LanKnight）](images/fig-08-sidebar-after.png)
+![图 8：修复后，首页右栏 Contributors 只剩 1 人](images/fig-08-sidebar-after.png)
 
-*图 8：计数从 2 变成 1，claude 消失。硬刷新后依旧如此，才算真正完成。*
+*图 8：计数从 2 变成 1，AI 账号消失。硬刷新后依旧如此，才算真正完成。*
 
 #### 第 6 步：删掉临时分支
 
@@ -459,9 +433,7 @@ git remote prune origin
 
 ---
 
-## 五、踩坑清单（原文 9 条 + 新增 8 条）
-
-原文那 9 条依然有效，其中第 1 条需要补一个关键限定。
+## 五、踩坑清单
 
 1. 🚫 「删了还在」几乎都是缓存层，不是历史层。**但缓存层有两份，别只认一份。** 先分清 ①②③-A ③-B，再动手。
 2. 🕳️ 本地备份 tag / 分支是复活的种子。`for-each-ref` + `ls-remote` 双查，任何指向老历史的引用都要删干净，再 `reflog expire` + `gc --prune=now`。
@@ -472,23 +444,18 @@ git remote prune origin
 7. 🖥️ PowerShell 里 git 的 stderr 会标红，看着像报错其实正常。
 8. 🔐 默认分支切换需要登录态。自动化别替你填凭据，先人工登录。
 9. ✉️ 根因在邮箱映射。历史上出现过 `noreply@anthropic.com` 这类被 GitHub 关联到真实账号的邮箱，头像就会挂上——从源头规范 `git config user.email` 才能治本。
-
-以下是这次新增的：
-
-10. 🆕 **`contributors-data` 干净 ≠ 侧栏干净。** 两者是不同数据源，侧栏走 `/_sidebar`。这是本篇存在的原因。
-11. 🆕 **`/contributors_list` 已废弃。** 它恒返回空 `<ul>`，拿它当证据会得出"已经干净了"的错误结论。
-12. 🆕 **未登录看不到侧栏名单。** 未登录只有骨架屏，脚本抓 HTML 永远"干净"，判断必须用登录态浏览器。
-13. 🆕 **`filter-branch --all` 会污染远端追踪引用。** 重写后 `--force-with-lease` 失效，`origin/HEAD` 也会从符号引用退化成普通引用。
-14. 🆕 **`filter-repo` 默认拒绝非全新克隆，且会动 `origin`。** 记得 `--force`，记得补 remote。
-15. 🆕 **控制台中文乱码 ≠ 仓库损坏。** PowerShell 重定向会转码，用 Python 读字节另存 UTF-8 再判断。
-16. 🆕 **`git log --grep` 没命中退出码也是 0。** 只看有没有输出，别看退出码。
-17. 🆕 **匿名 API 会 `403 rate limit exceeded`。** 那是限流，不是"没删干净"，换不需要 token 的图表接口即可。
+10. 🧩 **`contributors-data` 干净 ≠ 侧栏干净。** 两者是不同数据源，侧栏走 `/_sidebar`。
+11. 🧩 **`/contributors_list` 已废弃。** 它恒返回空 `<ul>`，拿它当证据会得出"已经干净了"的错误结论。
+12. 🧩 **未登录看不到侧栏名单。** 未登录只有骨架屏，脚本抓 HTML 永远"干净"，判断必须用登录态浏览器。
+13. 🧩 **`filter-branch --all` 会污染远端追踪引用。** 重写后 `--force-with-lease` 失效，`origin/HEAD` 也会从符号引用退化成普通引用。
+14. 🧩 **`filter-repo` 默认拒绝非全新克隆，且会动 `origin`。** 记得 `--force`，记得补 remote。
+15. 🧩 **控制台中文乱码 ≠ 仓库损坏。** PowerShell 重定向会转码，用 Python 读字节另存 UTF-8 再判断。
+16. 🧩 **`git log --grep` 没命中退出码也是 0。** 只看有没有输出，别看退出码。
+17. 🧩 **匿名 API 会 `403 rate limit exceeded`。** 那是限流，不是"没删干净"，换不需要 token 的图表接口即可。
 
 ---
 
 ## 六、防止再次发生
-
-原文四条都保留，这里补上可直接用的实现。
 
 **① 规范提交身份**
 
@@ -546,7 +513,7 @@ jobs:
 
 ## 七、完成态验证清单
 
-原文有六条，这次拆成"命令层"和"页面层"两套，两边都过了才算完。
+验证分命令层和页面层两套，两边都过才算完成。
 
 **命令层**
 
@@ -583,7 +550,7 @@ git status --porcelain
 
 ## 八、把这件事交给 AI Agent
 
-如果你用 AI 编程助手干活，这一节可能是最实用的：让 Agent 自己开浏览器去看，比你在命令行里折腾半天靠谱。但**给的指令必须可验收**，否则它会给你一个"API 是干净的，是你浏览器缓存"的漂亮答案。
+让 Agent 代你操作浏览器是可行的，它能看到你在命令行里看不到的侧栏。但**给的指令必须可验收**，否则它会给你一个"API 是干净的，是你浏览器缓存"的漂亮答案。
 
 ### 8.1 为什么必须用登录态浏览器
 
@@ -596,14 +563,14 @@ git status --porcelain
 
 ### 8.2 第一段指令：只读侦察
 
-```
+```text
 请用浏览器实地检查 GitHub 仓库 <仓库URL> 的贡献者情况，全程只读，不要点任何修改设置的按钮。
 
 1. 打开仓库首页，等右侧栏 Contributors 区块懒加载完成（可能要等 10 秒或滚动一次）。
 2. 记录：Contributors 计数是几？逐个列出账号 login，特别注意还有没有 <目标账号>。
 3. 确认浏览器是否登录：读 meta[name="user-login"] 的值，或看右上角账户菜单，告诉我登录名。
 4. 截图，给出截图的绝对文件路径。
-5. 再打开 /graphs/contributors，等“Crunching the latest data”消失，列出贡献者账号，同样截图给路径。
+5. 再打开 /graphs/contributors，等 "Crunching the latest data" 消失，列出贡献者账号，同样截图给路径。
 6. 回报：侧栏计数与账号列表、图表账号列表、两张图绝对路径、当前登录名。
    哪个区块没渲染出来就如实说，不要猜。
 ```
@@ -617,8 +584,8 @@ git status --porcelain
 
 ### 8.3 第二段指令：写操作（仅在你自己授权后）
 
-```
-请代我执行“切默认分支逼重算”。严格限定：只操作 Default branch 这一个设置，
+```text
+请代我执行"切默认分支逼重算"。严格限定：只操作 Default branch 这一个设置，
 不要碰 Branch protection rules、Rulesets 或其它任何设置，不要删除分支。
 
 1. 打开 Settings → General（注意不是 Settings → Branches，新版已迁移）。
@@ -635,7 +602,7 @@ git status --porcelain
    并说明卡在哪一步。
 ```
 
-验收标准：报告里要能看到两次变化横幅（去和回），不是只说"我切了"；最终默认分支已回到原值；侧栏计数从 2 变 1；硬刷新后一致。本文图 5~8 就是这套流程的输出。
+验收标准：报告里要能看到两次变化横幅（去和回），不是只说"我切了"；最终默认分支已回到原值；侧栏计数从 2 变 1；硬刷新后一致。图 3~8 就是这套流程每一步的截图。
 
 ### 8.4 Agent 常见误判与追问话术
 
@@ -655,34 +622,22 @@ git status --porcelain
 
 ---
 
-## 附 A：lankhub 首战事实（原文记录）
+## 附录：可对照的实测数据
+
+下面是一份实测记录，可以用它对照你的每一步输出是否符合预期。
 
 | 项 | 值 |
 | --- | --- |
-| 仓库 | `github.com/LanKnight/lankhub` |
-| main tip | `781eabd`（当前历史已无尾注） |
-| 本地备份 tag | `backup-before-rewrite` → `71d1d5b`（含 27 个带署名提交，已删） |
-| 幽灵贡献者 | 登录名 `claude`（显示名 Claude，GitHub ID 81847），经邮箱 `noreply@anthropic.com` 关联 |
-| 破缓存手段 | 默认分支 main → temp-cache-refresh(`5895930`) → main 来回切 |
-| 网络代理 | `127.0.0.1:7897` |
-| 工具版本 | git 2.50.1（注意：不支持 `gc --dry-run`） |
-
-## 附 B：lank 再战事实（本次）
-
-| 项 | 值 |
-| --- | --- |
-| 仓库 | `github.com/LanKnight/lank` |
-| 重写前 main tip | `43b32f1`（共 37 个提交） |
-| 带署名提交 | `e004891`、`f1fd6f0`、`e4c750b`、`7ba8d07`、`c183444`（5 个） |
-| 署名格式 | `Co-Authored-By: Claude <noreply@anthropic.com>` |
-| 重写工具 | `git filter-branch -f --msg-filter`（filter-repo 因网络装不上） |
-| 重写后 main tip | `ee24b91`，追加注释中性化提交后为 `5ce9848` |
-| 内容校验 | 重写前后 `git diff --stat` 无输出，代码零变化 |
+| 署名格式 | `Co-Authored-By: Claude <noreply@anthropic.com>`，邮箱 `noreply@anthropic.com` 被关联到账号 `claude`（GitHub ID 81847） |
+| 带署名的提交数 | 5 个（示例 SHA：`e004891`、`f1fd6f0`、`e4c750b`、`7ba8d07`、`c183444`） |
+| 仓库历史规模 | 37 个提交 |
+| 重写前 main | `43b32f1` |
+| 重写后 main | `ee24b91` |
+| 内容校验 | `git diff --stat 43b32f1 ee24b91` 无输出，代码零变化 |
 | 层② 清理 | 删 `refs/original/*` → `reflog expire` → `gc --prune=now`，`fsck --unreachable` 归零 |
-| 层③-A | 重写推送后数小时内，`contributors-data` 由 202 转 200，仅剩 LanKnight |
-| 层③-B | 临时分支 → Settings → General 切分支 → 35 秒后切回 |
-| 层③-B 效果 | 侧栏由 2 人变 1 人，硬刷新后稳定 |
-| 收尾 | 删临时分支（远端 + 本地）、`git remote prune origin`，远端仅剩 `refs/heads/main` |
+| 层③-A | 推送后 `contributors-data` 由 202 转 200，耗时数小时 |
+| 层③-B | 切默认分支来回，间隔 35 秒，侧栏由 2 人变 1 人 |
+| 工具环境 | git 2.50.1（不支持 `gc --dry-run`）；filter-repo 因网络装不上，改用 filter-branch |
 
 ---
 
