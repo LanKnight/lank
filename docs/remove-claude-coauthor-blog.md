@@ -2,7 +2,13 @@
 
 仓库贡献者名单里出现 AI 账号，通常不是删掉一条 `Co-Authored-By` 尾注就能解决的。这行署名会残留在五个互不相干的位置，每一处的清除方式和生效延迟都不同。只处理其中一处，就会遇到"`git log` 已经干净、仓库首页还挂着它"的情况。
 
-下面按「先定位、再动手、最后验收」的顺序给出完整步骤。
+整件事按固定顺序做三件事，顺序不能换：
+
+1. **重写历史**（4.1）：把提交里的尾注删掉并推送，这是后面所有步骤的前提。
+2. **清掉本地残留**（4.1.3）：删备份引用、reflog、不可达对象，避免署名被一次 `--mirror` 推回去。
+3. **逼服务端重算**（4.2、4.3）：先等图表索引跟上，再用切默认分支让首页侧栏重算。
+
+排查方法在第二节，动手命令在第四节，踩坑清单在第五节，验收标准在第七节，让 Agent 代操作的指令模板在第八节。
 
 ---
 
@@ -63,6 +69,8 @@ git --no-pager log --all -i --grep="claude" --format="===%h===%n%B" -n 10
 git --no-pager log --all -i --grep="claude" --format="%h %an <%ae> | %cn <%ce>"
 ```
 
+如果输出里出现 `Author: Claude <noreply@anthropic.com>`，说明作者邮箱也挂在 AI 账号上，光删尾注不会掉头像，得连同 author 一起改写——做法见 4.1 末尾的《若 author 邮箱也挂着 AI 账号》。
+
 > 注意：`git log` 无匹配时**退出码也是 0**，别用退出码判断"有没有署名"，只看有没有输出。
 >
 > 注意：PowerShell 里 git 的进度和警告走 stderr，会标红一片，看着像报错其实正常。判断成败看 `$LASTEXITCODE` 与实际输出行。
@@ -77,7 +85,7 @@ python -c "import subprocess;d=subprocess.run(['git','log','-1','--format=%B'],c
 
 ### 2.2 看远端和本地分别还有哪些引用
 
-```bash
+```powershell
 # 远端全部引用 —— 重点看有没有你本地没拉过的"古董分支/Tag"
 git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 ls-remote origin
 
@@ -87,6 +95,8 @@ git for-each-ref --format="%(objecttype) %(refname) %(objectname:short)"
 # 本地不可达对象（gc 前会被列出来，gc --prune=now 后才清零）
 git fsck --unreachable --no-progress | Measure-Object -Line
 ```
+
+`Measure-Object -Line` 是 PowerShell 写法，macOS / Linux 上换成 `| wc -l`。下面几处统计命令同理。
 
 > 坑：最容易漏的一条：`for-each-ref` 看本地、`ls-remote` 看远端，两边都要查。本地很可能藏着 `backup-before-rewrite` 这类备份 tag，指着几十个带署名的老提交。只要它还"可达"，一次手滑的 `push --mirror` 就能让署名原地复活。
 
@@ -114,7 +124,8 @@ python -c "import json,urllib.request;u='https://api.github.com/repos/<owner>/<r
 # 3) 图表数据接口（浏览器直接打开，未登录可访问）
 #    https://github.com/<owner>/<repo>/graphs/contributors-data?all=1
 
-# 4) commit 搜索（网页版搜 co-authored-by，或带 cloak-preview Accept 头的 search API）
+# 4) commit 搜索（网页版直接打开，无需登录）
+#    https://github.com/search?q=repo%3A<owner>%2F<repo>+co-authored-by&type=commits
 ```
 
 判读：
@@ -161,7 +172,7 @@ python -c "import json,urllib.request;u='https://api.github.com/repos/<owner>/<r
 
 用"硬刷新没用"就断言"肯定是缓存"是错的，得拿证据。用下面三条判据定性：
 
-**判据一：看端点响应头。** `/_sidebar` 返回：
+**判据一：看端点响应头。** 用浏览器开发者工具的 Network 面板刷新仓库首页，找到 `_sidebar` 那条请求（也可以用 `curl -I` 带上自己登录后的 Cookie），响应头里有：
 
 ```text
 Cache-Control: no-cache
@@ -204,16 +215,30 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ---
 
-## 四、删除手段总览（按风险从低到高）
+## 四、删除手段：按位置逐个清除
 
 ### 4.1 层①：重写当前历史
+
+#### 动手前先做三件事
+
+```bash
+# 1) 记下三个基准值，4.1.2 校验要用它对照
+git rev-parse main                      # 重写前的完整 SHA
+git rev-list --all --count              # 提交总数
+git ls-remote origin refs/heads/main    # 远端当前值
+
+# 2) 在仓库外做备份。不要用 tag 或分支备份——它们会变成层②的复活种子
+git bundle create ../backup-before-rewrite.bundle --all
+
+# 3) 通知协作者：重写推送后他们需要 git fetch && git reset --hard origin/main
+```
 
 #### 方案 A：git filter-repo（首选）
 
 ```bash
 git filter-repo --force --message-callback "
 import re
-return re.sub(rb'(?im)^\s*Co-Authored-By:\s*(claude|anthropic)[^\n]*\n?', b'', message)
+return re.sub(rb'(?im)^[ \t]*Co-Authored-By:[ \t]*(claude|anthropic)[^\n]*\n?', b'', message)
 "
 ```
 
@@ -277,7 +302,35 @@ git filter-branch -f --msg-filter "python D:/tools/_strip_coauthor.py" -- HEAD
 
 只用 `HEAD` 或 `main`，不碰任何远端引用，最稳。如果已经跑了 `--all`，按 4.1.1 修回来。
 
+#### 若 author 邮箱也挂着 AI 账号
+
+尾注只是署名的一半。`git log` 里若出现 `Author: Claude <noreply@anthropic.com>`，说明作者邮箱本身也被关联到了 AI 账号，这种情况光删尾注不会掉头像。
+
+filter-repo 用 mailmap：
+
+```bash
+# 格式：正确身份 <正确邮箱> <需替换的名字> <需替换的邮箱>
+echo '你的名字 <你的邮箱> Claude <noreply@anthropic.com>' > mailmap.txt
+git filter-repo --force --mailmap mailmap.txt
+```
+
+filter-branch 用环境变量过滤：
+
+```bash
+git filter-branch -f --env-filter '
+if [ "$GIT_AUTHOR_EMAIL" = "noreply@anthropic.com" ]; then
+  export GIT_AUTHOR_NAME="你的名字"; export GIT_AUTHOR_EMAIL="你的邮箱"
+fi
+if [ "$GIT_COMMITTER_EMAIL" = "noreply@anthropic.com" ]; then
+  export GIT_COMMITTER_NAME="你的名字"; export GIT_COMMITTER_EMAIL="你的邮箱"
+fi' -- HEAD
+```
+
+这类改写同样会改变提交哈希，只能在重写阶段一起做，不能事后补。
+
 #### 4.1.1 重写后必须做的引用修复
+
+只在跑了 `--all`（或发现 `origin/HEAD` 不再是符号引用）时才需要做这一步；用 `HEAD` 重写的可以跳过。
 
 ```bash
 # 1) 看远端追踪引用被改成什么样了
@@ -298,14 +351,18 @@ git symbolic-ref refs/remotes/origin/HEAD   # 确认输出 refs/remotes/origin/m
 
 ```bash
 # 校验一：尾注真的没了（应无输出）
-git log --all -i --grep="co-authored-by" --format="%h %s"
+# 这里必须用 HEAD，不能用 --all：此刻 refs/original 仍指向带尾注的老提交，
+# --all 一定会命中，会让你误以为没删掉
+git log HEAD -i --grep="co-authored-by" --format="%h %s"
 
 # 校验二：代码内容一字未变（应无输出）
 git diff --stat <重写前的完整SHA> HEAD
 
-# 校验三：提交数量没变
-git rev-list --all --count
+# 校验三：提交数量没变（与 4.1 开头记下的数字一致）
+git rev-list HEAD --count
 ```
+
+把三个结果和 4.1 开头记下的基准值对照：提交数必须一致，`git diff --stat` 必须为空。
 
 校验二不通过，说明脚本读错了 stdin，立刻回滚：`git reset --hard <重写前的完整SHA>`。
 
@@ -332,9 +389,11 @@ git push --force-with-lease origin main
 git push --force-with-lease=main:<旧SHA> origin main
 ```
 
+推送成功先通知协作者 `git fetch && git reset --hard origin/main`；已经开着的 PR 需要重新基于新历史提交，否则会显示大量冲突。
+
 推送成功后清本地备份引用（即层②）：
 
-```bash
+```powershell
 git for-each-ref refs/original --format="%(refname)"
 git update-ref -d refs/original/refs/heads/main
 git update-ref -d refs/original/refs/remotes/origin/main
@@ -350,11 +409,15 @@ git fsck --unreachable --no-progress | Measure-Object -Line   # 复查应为 0
 
 重写推送后，`contributors-data?all=1` 会先返回 **202**（重算中），过一段时间变成 **200** 且只剩你自己。实测是几小时内跟上，不需要任何额外操作。
 
-如果几小时后仍是 2 人，说明历史没重写干净，回 4.1.2 复查，别急着去刷缓存。
+如果几小时后图表仍显示 2 人，回 2.1 复查历史是否真的重写干净，别急着去刷缓存。
 
 ### 4.3 层③-B：切默认分支逼重算（保姆级六步）
 
 > 注意：新版 GitHub 的设置路径已经变了，这是最容易卡住的一步。
+>
+> 另一个前提：4.1、4.2 已经跑完。历史还没重写就去切分支，重算出来的仍是带署名的那份数据，等于白切一次。
+>
+> 如果 `main` 上挂了 branch protection 或 ruleset，先确认它们不会阻止切换默认分支，必要时临时停用。
 
 #### 第 1 步：准备临时分支（必须与主分支同一个 commit）
 
@@ -427,7 +490,7 @@ git remote prune origin
 
 | 方案 | 代价 | 说明 |
 | --- | --- | --- |
-| orphan 空历史强推覆盖 main | 高：默认分支短暂"几乎空" | 社区"休克疗法"，比切分支暴力 |
+| orphan 空历史强推覆盖 main | 高：默认分支短暂"几乎空" | 社区"休克疗法"，比切分支暴力；会重建整棵历史树，动手前先确认 bundle 备份能正常恢复 |
 | 提 GitHub Support 工单 | 慢：等回复，需登录 | 说明"已 force push 清理历史，请求清除贡献者缓存"，附操作时间 |
 | 删库重建 | 最高：丢 star / issue / 旧 URL | 100% 干净，但非必要不建议 |
 
@@ -452,6 +515,7 @@ git remote prune origin
 15. **控制台中文乱码 ≠ 仓库损坏。** PowerShell 重定向会转码，用 Python 读字节另存 UTF-8 再判断。
 16. **`git log --grep` 没命中退出码也是 0。** 只看有没有输出，别看退出码。
 17. **匿名 API 会 `403 rate limit exceeded`。** 那是限流，不是"没删干净"，换不需要 token 的图表接口即可。
+18. **重写后别用 `git log --all` 验收。** `refs/original` 还指着带尾注的老提交，`--all` 一定命中，会让你误以为没删掉；先看 `HEAD`，清完层②再用 `--all` 复查。
 
 ---
 
@@ -463,6 +527,8 @@ git remote prune origin
 git config --global user.name "你的名字"
 git config --global user.email "你的GitHub已验证邮箱"
 ```
+
+这两条只影响之后的提交，不会自动纠正已有历史。
 
 **② 关掉 AI 工具的 co-author 尾注**
 
@@ -501,7 +567,7 @@ jobs:
           fetch-depth: 0
       - name: Reject AI co-author trailers
         run: |
-          out=$(git log --all -i --grep='co-authored-by:.*\(claude\|anthropic\)' --format='%h %s')
+          out=$(git log --all -i --grep='co-authored-by:.*\(claude\|anthropic\|openai\|copilot\)' --format='%h %s')
           if [ -n "$out" ]; then
             echo "::error::发现 AI co-author 尾注："
             echo "$out"
@@ -517,8 +583,8 @@ jobs:
 
 **命令层**
 
-```bash
-# 1. 当前历史无尾注（应无输出）
+```powershell
+# 1. 当前历史无尾注（应无输出；已完成 4.1.3 才能用 --all）
 git log --all -i --grep="co-authored-by" --format="%h %s"
 
 # 2. 本地不可达对象为 0
@@ -583,6 +649,8 @@ git status --porcelain
 - 明确回答了登录状态与登录名
 
 ### 8.3 第二段指令：写操作（仅在你自己授权后）
+
+前提：4.3 第 1 步的临时分支已经推上去了，否则下拉里选不到。
 
 ```text
 请代我执行"切默认分支逼重算"。严格限定：只操作 Default branch 这一个设置，
